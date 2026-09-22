@@ -1,0 +1,6 @@
+{
+  "fixtures": [{"id": 100}],
+  "history": [{"fixture": 99, "minutes": 87}],
+  "history_past": [{"season_name": "2025/26"}],
+  "future_field": ["preserved"]
+}

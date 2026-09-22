@@ -1,0 +1,129 @@
+version: 202526
+competition: Fantasy Premier League
+season: "2025/26"
+
+description: >
+  Historical 2025/26 optimizer rules for player-chip reference strategies.
+  The season-specific AFCON GW16 FT top-up is documented below but is not
+  represented by the current generic OptimizerRules transition contract.
+  Projection-only backtests must use --skip-reference until that transition
+  is implemented explicitly.
+
+metadata:
+  primary_authority: "Premier League / Fantasy Premier League 2025/26 rules"
+  source_urls:
+    - "https://www.premierleague.com/en/news/4362211"
+    - "https://www.premierleague.com/en/news/4362027"
+  assistant_manager: "Not present in 2025/26."
+  afcon_gw16_free_transfer_top_up:
+    enabled: true
+    target_free_transfers: 5
+    optimizer_contract_supported: false
+
+initial_squad:
+  squad_size: 15
+  maximum_players_per_club: 3
+  initial_budget: 1000
+
+positions:
+  goalkeeper: {canonical_code: GK, squad_count: 2}
+  defender: {canonical_code: DEF, squad_count: 5}
+  midfielder: {canonical_code: MID, squad_count: 5}
+  forward: {canonical_code: FWD, squad_count: 3}
+
+starting_xi:
+  valid_formations:
+    ["3-4-3", "3-5-2", "4-3-3", "4-4-2",
+     "4-5-1", "5-2-3", "5-3-2", "5-4-1"]
+
+transfers:
+  normal_gameweek:
+    free_transfers_granted_per_gameweek: 1
+    maximum_bankable_free_transfers: 5
+    points_cost_per_transfer_above_allowance: 4
+    maximum_regular_transfers_per_gameweek: 20
+
+free_transfer_state:
+  minimum: 1
+  maximum: 5
+
+decision_v2:
+  candidate_generation:
+    candidates_per_metric: 8
+    maximum_candidates_per_position: 24
+    second_transfer_beam_width: 24
+
+  free_transfer_option_value:
+    interpretation: >
+      Expected avoided future -4 hit when an additional free transfer is retained.
+    future_transfer_need_probability: 0.25
+
+  lookahead:
+    steps: 1
+    discount: 0.95
+    future_prices: "hold current point-in-time prices constant"
+
+  indifference_margin_points: 0.25
+  similar_projection_gain_points: 1.0
+
+  sensitivity:
+    runs: 24
+    projection_uncertainty_scale: 0.15
+
+chip_timing_v2:
+  evaluation_horizon_gameweeks: 6
+  minimum_incremental_ev: 1.0
+  future_opportunity_tolerance: 0.25
+  wildcard_minimum_weighted_gain: 8.0
+  free_hit_minimum_single_gameweek_gain: 6.0
+
+captaincy:
+  captain_multiplier: 2
+
+triple_captain:
+  captain_multiplier: 3
+
+chips:
+  maximum_active_per_gameweek: 1
+  types: [wildcard, free_hit, bench_boost, triple_captain]
+
+  total_per_season:
+    wildcard: 2
+    free_hit: 2
+    bench_boost: 2
+    triple_captain: 2
+
+  excluded_from_v1: []
+
+chip_periods:
+  first_half:
+    gameweeks:
+      through: 19
+
+  second_half:
+    gameweeks:
+      from: 20
+      through: 38
+
+wildcard:
+  transfer_limit:
+    unlimited: true
+  transfer_hit_cost: 0
+  squad_change:
+    temporary: false
+    permanent: true
+  free_transfer_state:
+    banked_transfers_retained: true
+
+free_hit:
+  transfer_limit:
+    unlimited: true
+  transfer_hit_cost: 0
+  squad_change:
+    temporary: true
+    duration_gameweeks: 1
+  persistent_state:
+    restore_original_squad_next_deadline: true
+    restore_original_bank_next_deadline: true
+  free_transfer_state:
+    banked_transfers_retained: true

@@ -1,0 +1,7 @@
+{
+  "events": [{"id": 5}],
+  "elements": [{"id": 123, "web_name": "Example", "unknown_stat": null}],
+  "teams": [{"id": 1}],
+  "element_types": [{"id": 1}],
+  "future_field": {"preserved": true}
+}

@@ -1,0 +1,133 @@
+version: 202223
+competition: Fantasy Premier League
+season: 2022/23
+description: Historical 2022/23 optimizer rules including the FIFA World Cup transfer
+  window.
+metadata:
+  primary_authority: Premier League/FPL 2022/23 rules and FIFA World Cup transfer-window
+    guidance.
+  source_urls:
+  - https://www.premierleague.com/en/news/4058895
+  assistant_manager: Not present in 2022/23.
+initial_squad:
+  squad_size: 15
+  maximum_players_per_club: 3
+  initial_budget: 1000
+positions:
+  goalkeeper:
+    canonical_code: GK
+    squad_count: 2
+  defender:
+    canonical_code: DEF
+    squad_count: 5
+  midfielder:
+    canonical_code: MID
+    squad_count: 5
+  forward:
+    canonical_code: FWD
+    squad_count: 3
+starting_xi:
+  valid_formations:
+  - 3-4-3
+  - 3-5-2
+  - 4-3-3
+  - 4-4-2
+  - 4-5-1
+  - 5-2-3
+  - 5-3-2
+  - 5-4-1
+transfers:
+  normal_gameweek:
+    free_transfers_granted_per_gameweek: 1
+    maximum_bankable_free_transfers: 2
+    points_cost_per_transfer_above_allowance: 4
+    maximum_regular_transfers_per_gameweek: 20
+free_transfer_state:
+  minimum: 1
+  maximum: 2
+decision_v2:
+  candidate_generation:
+    candidates_per_metric: 8
+    maximum_candidates_per_position: 24
+    second_transfer_beam_width: 24
+  free_transfer_option_value:
+    interpretation: Expected avoided future -4 hit when an additional free transfer
+      is retained.
+    future_transfer_need_probability: 0.25
+  lookahead:
+    steps: 1
+    discount: 0.95
+    future_prices: hold current point-in-time prices constant
+  indifference_margin_points: 0.25
+  similar_projection_gain_points: 1.0
+  sensitivity:
+    runs: 24
+    projection_uncertainty_scale: 0.15
+chip_timing_v2:
+  evaluation_horizon_gameweeks: 6
+  minimum_incremental_ev: 1.0
+  future_opportunity_tolerance: 0.25
+  wildcard_minimum_weighted_gain: 8.0
+  free_hit_minimum_single_gameweek_gain: 6.0
+captaincy:
+  captain_multiplier: 2
+triple_captain:
+  captain_multiplier: 3
+chips:
+  maximum_active_per_gameweek: 1
+  types:
+  - wildcard
+  - free_hit
+  - bench_boost
+  - triple_captain
+  total_per_season:
+    wildcard: 2
+    free_hit: 1
+    bench_boost: 1
+    triple_captain: 1
+  excluded_from_v1: []
+chip_periods:
+  first_half:
+    gameweeks:
+      through: 16
+  second_half:
+    gameweeks:
+      from: 18
+      through: 38
+wildcard:
+  transfer_limit:
+    unlimited: true
+  transfer_hit_cost: 0
+  squad_change:
+    temporary: false
+    permanent: true
+  free_transfer_state:
+    banked_transfers_retained: false
+    reset_to: 1
+free_hit:
+  transfer_limit:
+    unlimited: true
+  transfer_hit_cost: 0
+  squad_change:
+    temporary: true
+    duration_gameweeks: 1
+  persistent_state:
+    restore_original_squad_next_deadline: true
+    restore_original_bank_next_deadline: true
+  free_transfer_state:
+    banked_transfers_retained: false
+    reset_to: 1
+special_transfer_windows:
+- name: FIFA World Cup 2022
+  after_gameweek_deadline: 16
+  before_gameweek_deadline: 17
+  unlimited_free_transfers: true
+  transfer_hit_cost: 0
+  player_prices_frozen: true
+  wildcard_available: false
+  bench_boost_available: true
+  free_hit_available: true
+  triple_captain_available: true
+  notes: Saved FT can survive into GW18 when rolled according to official 2022/23
+    World Cup rules. Sequential strategy code must handle this explicitly before using
+    2022/23 as optimizer evidence.

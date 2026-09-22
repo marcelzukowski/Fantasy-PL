@@ -1,0 +1,2123 @@
+version: 1
+
+description: >
+  Canonical Data Requirement Matrix for the FPL Prediction & Decision Engine.
+  Every raw field, contextual signal and derived feature used by the final system
+  must be represented here with source priority, fallback strategy, temporal
+  availability, leakage policy and consuming model(s).
+
+global_rules:
+  canonical_time_zone: "UTC"
+  prediction_principle: "what_was_known_at_prediction_time"
+  default_prediction_horizon_gameweeks: 6
+  raw_data_immutable: true
+  retain_raw_snapshots: true
+  require_retrieval_timestamp: true
+  require_source_provenance: true
+  require_point_in_time_validation_for_backtests: true
+  missing_data_policy: "explicit_missingness; never silently forward-fill across regime changes"
+  derived_features_rule: >
+    Every derived feature must be reproducible solely from source records whose
+    effective availability timestamp is <= prediction_timestamp.
+  source_priority_rule: >
+    Prefer the primary source. Use fallback only when the primary source is unavailable,
+    stale, incomplete or fails validation. Persist which source was actually used.
+  no_silent_overrides: true
+
+entities:
+  player:
+    grain: "one football player"
+    canonical_key: "player_id"
+
+  team:
+    grain: "one football club"
+    canonical_key: "team_id"
+
+  manager:
+    grain: "one manager/coaching regime"
+    canonical_key: "manager_id"
+
+  fixture:
+    grain: "one football match"
+    canonical_key: "fixture_id"
+
+  gameweek:
+    grain: "one FPL gameweek"
+    canonical_key: "gameweek_id"
+
+  player_fixture:
+    grain: "one player in one fixture"
+    canonical_key: ["player_id", "fixture_id"]
+
+  team_fixture:
+    grain: "one team in one fixture"
+    canonical_key: ["team_id", "fixture_id"]
+
+  prediction_snapshot:
+    grain: "state known at a specific prediction time"
+    canonical_key: ["prediction_timestamp", "target_gameweek"]
+
+  manager_team_spell:
+    grain: "one manager spell at one club"
+    canonical_key: ["manager_id", "team_id", "effective_from"]
+
+  player_team_spell:
+    grain: "one player spell at one club"
+    canonical_key: ["player_id", "team_id", "effective_from"]
+
+  fpl_squad_snapshot:
+    grain: "user squad state at a specific time"
+    canonical_key: ["fpl_manager_id", "snapshot_timestamp"]
+
+requirement_schema:
+  required_fields:
+    - entity
+    - dtype
+    - category
+    - primary_source
+    - required
+    - point_in_time
+    - models_using
+    - leakage_risk
+
+requirements:
+
+  # ---------------------------------------------------------------------------
+  # A. CANONICAL IDENTITY
+  # ---------------------------------------------------------------------------
+
+  player_id:
+    entity: player
+    dtype: string
+    category: identity
+    primary_source: internal_identity_registry
+    fallback_source: manual_mapping
+    required: true
+    point_in_time: false
+    update_frequency: on_discovery
+    models_using: [all]
+    leakage_risk: none
+    notes:
+      - "Stable internal ID. Never use provider IDs as the canonical key."
+
+  player_name:
+    entity: player
+    dtype: string
+    category: identity
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: false
+    update_frequency: on_change
+    models_using: [reporting, identity_resolution]
+    leakage_risk: low
+
+  player_date_of_birth:
+    entity: player
+    dtype: date
+    category: identity
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: false
+    update_frequency: static
+    models_using: [minutes_model, player_talent_model]
+    leakage_risk: none
+
+  player_nationality:
+    entity: player
+    dtype: string
+    category: identity
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: false
+    point_in_time: false
+    update_frequency: rare
+    models_using: [cross_league_adjustment]
+    leakage_risk: low
+
+  fpl_player_id:
+    entity: player
+    dtype: integer
+    category: identity
+    primary_source: official_fpl_api
+    fallback_source: vaastav_fpl
+    required: true
+    point_in_time: true
+    update_frequency: season_start
+    models_using: [data_pipeline, reporting]
+    leakage_risk: low
+
+  advanced_provider_player_id:
+    entity: player
+    dtype: string
+    category: identity
+    primary_source: advanced_football_provider
+    fallback_source: manual_mapping
+    required: true
+    point_in_time: false
+    update_frequency: on_discovery
+    models_using: [data_pipeline]
+    leakage_risk: none
+
+  team_id:
+    entity: team
+    dtype: string
+    category: identity
+    primary_source: internal_identity_registry
+    fallback_source: manual_mapping
+    required: true
+    point_in_time: false
+    update_frequency: on_discovery
+    models_using: [all]
+    leakage_risk: none
+
+  team_name:
+    entity: team
+    dtype: string
+    category: identity
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: season_start
+    models_using: [reporting, identity_resolution]
+    leakage_risk: low
+
+  competition_id:
+    entity: fixture
+    dtype: string
+    category: identity
+    primary_source: advanced_football_provider
+    fallback_source: internal_competition_registry
+    required: true
+    point_in_time: false
+    update_frequency: static
+    models_using: [cross_league_adjustment, fixture_congestion]
+    leakage_risk: none
+
+  fixture_id:
+    entity: fixture
+    dtype: string
+    category: identity
+    primary_source: internal_identity_registry
+    fallback_source: manual_mapping
+    required: true
+    point_in_time: false
+    update_frequency: on_discovery
+    models_using: [all]
+    leakage_risk: none
+
+  provider_fixture_ids:
+    entity: fixture
+    dtype: json
+    category: identity
+    primary_source: internal_identity_registry
+    fallback_source: manual_mapping
+    required: true
+    point_in_time: false
+    update_frequency: on_discovery
+    models_using: [data_pipeline]
+    leakage_risk: none
+
+  # ---------------------------------------------------------------------------
+  # B. FPL STATE
+  # ---------------------------------------------------------------------------
+
+  fpl_position:
+    entity: player
+    dtype: categorical
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: vaastav_fpl
+    required: true
+    point_in_time: true
+    update_frequency: season_start_and_changes
+    models_using: [scoring_engine, optimizer, event_models]
+    leakage_risk: medium
+    notes:
+      - "Use value known at prediction time; do not retroactively rewrite historical position."
+
+  current_price:
+    entity: player
+    dtype: float
+    unit: "million_GBP_FPL"
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [optimizer, value_metrics, reporting]
+    leakage_risk: high
+
+  ownership_pct:
+    entity: player
+    dtype: float
+    unit: percent
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [reporting, optional_game_theory_layer]
+    leakage_risk: high
+
+  transfers_in_event:
+    entity: player
+    dtype: integer
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: false
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [optional_market_sentiment]
+    leakage_risk: high
+
+  transfers_out_event:
+    entity: player
+    dtype: integer
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: false
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [optional_market_sentiment]
+    leakage_risk: high
+
+  fpl_status:
+    entity: player
+    dtype: categorical
+    category: availability
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model, optimizer]
+    leakage_risk: critical
+
+  chance_of_playing_next_round:
+    entity: player
+    dtype: float
+    unit: percent
+    category: availability
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model]
+    leakage_risk: critical
+
+  player_news:
+    entity: player
+    dtype: string
+    category: availability
+    primary_source: official_fpl_api
+    fallback_source: fplcache
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model, context_engine]
+    leakage_risk: critical
+
+  fpl_total_points_to_date:
+    entity: player
+    dtype: integer
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: vaastav_fpl
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [baseline_models, reporting]
+    leakage_risk: high
+    notes:
+      - "Never use final season total for historical prediction."
+
+  fpl_points_last_fixture:
+    entity: player_fixture
+    dtype: integer
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: vaastav_fpl
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [baseline_models, reporting]
+    leakage_risk: high
+    notes:
+      - "May be a weak feature; never dominant representation of form."
+
+  bps:
+    entity: player_fixture
+    dtype: integer
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: vaastav_fpl
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [bonus_model]
+    leakage_risk: high
+
+  bonus_points:
+    entity: player_fixture
+    dtype: integer
+    category: fpl_state
+    primary_source: official_fpl_api
+    fallback_source: vaastav_fpl
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [bonus_model, scoring_engine]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # C. MINUTES / AVAILABILITY / ROTATION
+  # ---------------------------------------------------------------------------
+
+  minutes_played:
+    entity: player_fixture
+    dtype: integer
+    unit: minutes
+    category: minutes
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [minutes_model, player_talent_model, event_models]
+    leakage_risk: high
+
+  started:
+    entity: player_fixture
+    dtype: boolean
+    category: minutes
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_lineup
+    models_using: [minutes_model]
+    leakage_risk: critical
+
+  starting_position:
+    entity: player_fixture
+    dtype: categorical
+    category: tactical_context
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_lineup
+    models_using: [minutes_model, player_talent_model, tactical_context]
+    leakage_risk: critical
+
+  substitution_on_minute:
+    entity: player_fixture
+    dtype: integer_nullable
+    unit: minutes
+    category: minutes
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  substitution_off_minute:
+    entity: player_fixture
+    dtype: integer_nullable
+    unit: minutes
+    category: minutes
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  bench_status:
+    entity: player_fixture
+    dtype: boolean
+    category: minutes
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_lineup
+    models_using: [minutes_model]
+    leakage_risk: critical
+
+  days_since_last_appearance:
+    entity: player_fixture
+    dtype: integer
+    category: workload
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model]
+    leakage_risk: medium
+    derivation: "prediction_timestamp - previous_appearance_timestamp"
+
+  minutes_last_7_days:
+    entity: player_fixture
+    dtype: integer
+    unit: minutes
+    category: workload
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  minutes_last_14_days:
+    entity: player_fixture
+    dtype: integer
+    unit: minutes
+    category: workload
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  consecutive_starts:
+    entity: player_fixture
+    dtype: integer
+    category: minutes
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model]
+    leakage_risk: medium
+
+  recent_substitution_pattern:
+    entity: player_fixture
+    dtype: json
+    category: minutes
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  injury_status:
+    entity: player
+    dtype: categorical
+    category: availability
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model, optimizer]
+    leakage_risk: critical
+
+  injury_type:
+    entity: player
+    dtype: categorical_nullable
+    category: availability
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model]
+    leakage_risk: critical
+
+  injury_start_date:
+    entity: player
+    dtype: datetime_nullable
+    category: availability
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_change
+    models_using: [minutes_model]
+    leakage_risk: critical
+
+  expected_return_date:
+    entity: player
+    dtype: datetime_nullable
+    category: availability
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model, optimizer]
+    leakage_risk: critical
+
+  suspension_status:
+    entity: player
+    dtype: boolean
+    category: availability
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model, optimizer]
+    leakage_risk: critical
+
+  suspension_matches_remaining:
+    entity: player
+    dtype: integer
+    category: availability
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [minutes_model, optimizer]
+    leakage_risk: critical
+
+  # ---------------------------------------------------------------------------
+  # D. OFFENSIVE PLAYER PERFORMANCE
+  # ---------------------------------------------------------------------------
+
+  goals:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model, baseline_models]
+    leakage_risk: high
+
+  assists:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [assist_model, player_talent_model, baseline_models]
+    leakage_risk: high
+
+  expected_goals:
+    entity: player_fixture
+    dtype: float
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model, team_strength_model]
+    leakage_risk: high
+
+  non_penalty_expected_goals:
+    entity: player_fixture
+    dtype: float
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: derived_from_xg_and_penalties
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model]
+    leakage_risk: high
+
+  expected_assists:
+    entity: player_fixture
+    dtype: float
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [assist_model, player_talent_model]
+    leakage_risk: high
+
+  shots:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model]
+    leakage_risk: high
+
+  shots_in_box:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model]
+    leakage_risk: high
+
+  shots_on_target:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model]
+    leakage_risk: high
+
+  big_chances:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model]
+    leakage_risk: high
+
+  big_chances_created:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [assist_model, player_talent_model]
+    leakage_risk: high
+
+  key_passes:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [assist_model, player_talent_model]
+    leakage_risk: high
+
+  touches_in_box:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, player_talent_model, tactical_context]
+    leakage_risk: high
+
+  progressive_carries:
+    entity: player_fixture
+    dtype: integer_nullable
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [player_talent_model, tactical_context]
+    leakage_risk: high
+
+  progressive_passes:
+    entity: player_fixture
+    dtype: integer_nullable
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [player_talent_model, tactical_context]
+    leakage_risk: high
+
+  expected_threat:
+    entity: player_fixture
+    dtype: float_nullable
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [player_talent_model, tactical_context]
+    leakage_risk: high
+
+  penalty_attempts:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, set_piece_context]
+    leakage_risk: high
+
+  penalty_goals:
+    entity: player_fixture
+    dtype: integer
+    category: offensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [goal_model, set_piece_context]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # E. DEFENSIVE PLAYER PERFORMANCE
+  # ---------------------------------------------------------------------------
+
+  tackles:
+    entity: player_fixture
+    dtype: integer
+    category: defensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model, player_talent_model]
+    leakage_risk: high
+
+  interceptions:
+    entity: player_fixture
+    dtype: integer
+    category: defensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model]
+    leakage_risk: high
+
+  clearances:
+    entity: player_fixture
+    dtype: integer
+    category: defensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model]
+    leakage_risk: high
+
+  blocks:
+    entity: player_fixture
+    dtype: integer
+    category: defensive
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model]
+    leakage_risk: high
+
+  recoveries:
+    entity: player_fixture
+    dtype: integer
+    category: defensive
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model]
+    leakage_risk: high
+
+  defensive_contributions:
+    entity: player_fixture
+    dtype: integer
+    category: defensive
+    primary_source: official_fpl_api
+    fallback_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model, scoring_engine]
+    leakage_risk: high
+
+  aerial_duels_won:
+    entity: player_fixture
+    dtype: integer_nullable
+    category: defensive
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [defensive_contribution_model, set_piece_goal_model]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # F. GOALKEEPER PERFORMANCE
+  # ---------------------------------------------------------------------------
+
+  saves:
+    entity: player_fixture
+    dtype: integer
+    category: goalkeeper
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [save_model, scoring_engine]
+    leakage_risk: high
+
+  shots_on_target_faced:
+    entity: player_fixture
+    dtype: integer
+    category: goalkeeper
+    primary_source: advanced_football_provider
+    fallback_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [save_model]
+    leakage_risk: high
+
+  post_shot_expected_goals_faced:
+    entity: player_fixture
+    dtype: float_nullable
+    category: goalkeeper
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [save_model, goalkeeper_talent_model]
+    leakage_risk: high
+
+  goals_conceded:
+    entity: player_fixture
+    dtype: integer
+    category: goalkeeper
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [save_model, clean_sheet_model, scoring_engine]
+    leakage_risk: high
+
+  penalties_saved:
+    entity: player_fixture
+    dtype: integer
+    category: goalkeeper
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [penalty_save_model, scoring_engine]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # G. TEAM STRENGTH
+  # ---------------------------------------------------------------------------
+
+  team_goals_for:
+    entity: team_fixture
+    dtype: integer
+    category: team_strength
+    primary_source: football_data
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model, baseline_models]
+    leakage_risk: high
+
+  team_goals_against:
+    entity: team_fixture
+    dtype: integer
+    category: team_strength
+    primary_source: football_data
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model, baseline_models]
+    leakage_risk: high
+
+  team_xg:
+    entity: team_fixture
+    dtype: float
+    category: team_strength
+    primary_source: advanced_football_provider
+    fallback_source: derived_sum_player_xg
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model]
+    leakage_risk: high
+
+  team_xga:
+    entity: team_fixture
+    dtype: float
+    category: team_strength
+    primary_source: advanced_football_provider
+    fallback_source: derived_opponent_team_xg
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model]
+    leakage_risk: high
+
+  team_shots:
+    entity: team_fixture
+    dtype: integer
+    category: team_strength
+    primary_source: football_data
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model]
+    leakage_risk: high
+
+  team_shots_on_target:
+    entity: team_fixture
+    dtype: integer
+    category: team_strength
+    primary_source: football_data
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model]
+    leakage_risk: high
+
+  team_big_chances:
+    entity: team_fixture
+    dtype: integer_nullable
+    category: team_strength
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model]
+    leakage_risk: high
+
+  possession_pct:
+    entity: team_fixture
+    dtype: float
+    unit: percent
+    category: team_strength
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model, tactical_context]
+    leakage_risk: high
+
+  field_tilt:
+    entity: team_fixture
+    dtype: float_nullable
+    category: team_strength
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [team_strength_model]
+    leakage_risk: high
+
+  opponent_adjusted_attack_strength:
+    entity: team_fixture
+    dtype: float
+    category: derived_team_strength
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [team_strength_model, event_models]
+    leakage_risk: high
+
+  opponent_adjusted_defence_strength:
+    entity: team_fixture
+    dtype: float
+    category: derived_team_strength
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [team_strength_model, event_models]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # H. FIXTURES / SCHEDULING / CONGESTION
+  # ---------------------------------------------------------------------------
+
+  gameweek:
+    entity: fixture
+    dtype: integer_nullable
+    category: fixture
+    primary_source: official_fpl_api
+    fallback_source: internal_schedule
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [optimizer, reporting]
+    leakage_risk: high
+
+  kickoff_time:
+    entity: fixture
+    dtype: datetime
+    category: fixture
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [fixture_congestion, data_pipeline]
+    leakage_risk: high
+
+  home_team_id:
+    entity: fixture
+    dtype: string
+    category: fixture
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [team_strength_model, event_models]
+    leakage_risk: medium
+
+  away_team_id:
+    entity: fixture
+    dtype: string
+    category: fixture
+    primary_source: official_fpl_api
+    fallback_source: advanced_football_provider
+    required: true
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [team_strength_model, event_models]
+    leakage_risk: medium
+
+  venue_home_away:
+    entity: team_fixture
+    dtype: categorical
+    category: fixture
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: static_per_fixture
+    models_using: [team_strength_model, player_talent_model]
+    leakage_risk: low
+
+  official_fpl_fixture_difficulty:
+    entity: team_fixture
+    dtype: integer
+    category: fixture
+    primary_source: official_fpl_api
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [baseline_models, reporting]
+    leakage_risk: medium
+    notes:
+      - "Do not use as the primary fixture strength model."
+
+  rest_days_before_fixture:
+    entity: team_fixture
+    dtype: integer
+    category: fixture_congestion
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model, team_strength_model]
+    leakage_risk: high
+
+  matches_last_7_days:
+    entity: team_fixture
+    dtype: integer
+    category: fixture_congestion
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [minutes_model, team_strength_model]
+    leakage_risk: high
+
+  matches_next_7_days_known:
+    entity: team_fixture
+    dtype: integer
+    category: fixture_congestion
+    primary_source: derived_from_known_schedule
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  european_match_before:
+    entity: team_fixture
+    dtype: boolean
+    category: fixture_congestion
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [minutes_model, team_strength_model]
+    leakage_risk: high
+
+  european_match_after:
+    entity: team_fixture
+    dtype: boolean
+    category: fixture_congestion
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  domestic_cup_match_before:
+    entity: team_fixture
+    dtype: boolean
+    category: fixture_congestion
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  domestic_cup_match_after:
+    entity: team_fixture
+    dtype: boolean
+    category: fixture_congestion
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_schedule_change
+    models_using: [minutes_model]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # I. TACTICAL CONTEXT / ROLE
+  # ---------------------------------------------------------------------------
+
+  team_starting_formation:
+    entity: team_fixture
+    dtype: categorical
+    category: tactical_context
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_lineup
+    models_using: [tactical_context, player_talent_model, minutes_model]
+    leakage_risk: critical
+
+  manager_id:
+    entity: team_fixture
+    dtype: string
+    category: tactical_context
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_manager_change
+    models_using: [team_strength_model, tactical_context, minutes_model]
+    leakage_risk: high
+
+  manager_effective_from:
+    entity: manager_team_spell
+    dtype: datetime
+    category: tactical_context
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_manager_change
+    models_using: [regime_change_engine]
+    leakage_risk: high
+
+  tactical_role:
+    entity: player_fixture
+    dtype: categorical
+    category: tactical_context
+    primary_source: derived_from_position_and_manual_context
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: after_lineup_or_manual_override
+    models_using: [player_talent_model, minutes_model, event_models]
+    leakage_risk: critical
+    examples:
+      - attacking_fullback
+      - defensive_fullback
+      - wingback
+      - centre_back
+      - holding_midfielder
+      - box_to_box
+      - attacking_midfielder
+      - touchline_winger
+      - inside_forward
+      - second_striker
+      - centre_forward
+
+  average_position_x:
+    entity: player_fixture
+    dtype: float_nullable
+    category: tactical_context
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [tactical_context, player_talent_model]
+    leakage_risk: high
+
+  average_position_y:
+    entity: player_fixture
+    dtype: float_nullable
+    category: tactical_context
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [tactical_context, player_talent_model]
+    leakage_risk: high
+
+  regime_change_flag:
+    entity: player_fixture
+    dtype: boolean
+    category: tactical_context
+    primary_source: derived
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [player_talent_model, minutes_model, team_strength_model]
+    leakage_risk: high
+
+  regime_change_type:
+    entity: player_fixture
+    dtype: categorical_list
+    category: tactical_context
+    primary_source: derived_and_manual
+    required: true
+    point_in_time: true
+    update_frequency: on_change
+    models_using: [player_talent_model, minutes_model]
+    leakage_risk: high
+    allowed_values:
+      - club_change
+      - league_change
+      - manager_change
+      - formation_change
+      - tactical_role_change
+      - fpl_position_change
+      - set_piece_change
+      - competition_change
+      - injury_return
+      - squad_competition_change
+
+  regime_change_confidence:
+    entity: player_fixture
+    dtype: float
+    range: [0.0, 1.0]
+    category: tactical_context
+    primary_source: derived_and_manual
+    required: true
+    point_in_time: true
+    update_frequency: on_change
+    models_using: [player_talent_model, minutes_model]
+    leakage_risk: medium
+
+  squad_competition_score:
+    entity: player_fixture
+    dtype: float
+    category: tactical_context
+    primary_source: derived
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [minutes_model]
+    leakage_risk: high
+    notes:
+      - "Represents credible competition for the same role, not total squad size."
+
+  # ---------------------------------------------------------------------------
+  # J. SET PIECES
+  # ---------------------------------------------------------------------------
+
+  penalty_taker_rank:
+    entity: player
+    dtype: integer_nullable
+    category: set_pieces
+    primary_source: official_fpl_api
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [goal_model, player_talent_model]
+    leakage_risk: critical
+
+  penalty_taker_confidence:
+    entity: player
+    dtype: float
+    range: [0.0, 1.0]
+    category: set_pieces
+    primary_source: manual_context
+    fallback_source: derived_from_recent_events
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [goal_model]
+    leakage_risk: high
+
+  direct_free_kick_rank:
+    entity: player
+    dtype: integer_nullable
+    category: set_pieces
+    primary_source: official_fpl_api
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [goal_model]
+    leakage_risk: high
+
+  indirect_free_kick_rank:
+    entity: player
+    dtype: integer_nullable
+    category: set_pieces
+    primary_source: official_fpl_api
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [assist_model]
+    leakage_risk: high
+
+  corner_rank_left:
+    entity: player
+    dtype: integer_nullable
+    category: set_pieces
+    primary_source: official_fpl_api
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [assist_model]
+    leakage_risk: high
+
+  corner_rank_right:
+    entity: player
+    dtype: integer_nullable
+    category: set_pieces
+    primary_source: official_fpl_api
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [assist_model]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # K. PLAYER TRANSFERS / CLUB & LEAGUE CONTEXT
+  # ---------------------------------------------------------------------------
+
+  player_team_id:
+    entity: player_team_spell
+    dtype: string
+    category: player_context
+    primary_source: advanced_football_provider
+    fallback_source: official_fpl_api
+    required: true
+    point_in_time: true
+    update_frequency: on_transfer
+    models_using: [player_talent_model, identity_resolution, regime_change_engine]
+    leakage_risk: high
+
+  player_team_effective_from:
+    entity: player_team_spell
+    dtype: datetime
+    category: player_context
+    primary_source: advanced_football_provider
+    fallback_source: manual_context
+    required: true
+    point_in_time: true
+    update_frequency: on_transfer
+    models_using: [regime_change_engine]
+    leakage_risk: high
+
+  previous_team_strength_attack:
+    entity: player_fixture
+    dtype: float_nullable
+    category: cross_league_context
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [player_talent_model]
+    leakage_risk: high
+
+  previous_team_strength_defence:
+    entity: player_fixture
+    dtype: float_nullable
+    category: cross_league_context
+    primary_source: derived
+    required: true
+    point_in_time: true
+    update_frequency: before_prediction
+    models_using: [player_talent_model]
+    leakage_risk: high
+
+  league_strength_coefficient:
+    entity: player_fixture
+    dtype: float
+    category: cross_league_context
+    primary_source: derived
+    fallback_source: configured_prior
+    required: true
+    point_in_time: true
+    update_frequency: periodic
+    models_using: [cross_league_adjustment, player_talent_model]
+    leakage_risk: high
+    notes:
+      - "Must be learned/backtested; never hardcode subjective league multipliers without validation."
+
+  cross_league_minutes:
+    entity: player_fixture
+    dtype: integer
+    category: cross_league_history
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [player_talent_model, minutes_model]
+    leakage_risk: high
+
+  cross_league_xg:
+    entity: player_fixture
+    dtype: float
+    category: cross_league_history
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [player_talent_model]
+    leakage_risk: high
+
+  cross_league_xa:
+    entity: player_fixture
+    dtype: float
+    category: cross_league_history
+    primary_source: advanced_football_provider
+    fallback_source: null
+    required: true
+    point_in_time: true
+    update_frequency: after_match
+    models_using: [player_talent_model]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # L. BOOKMAKER / MARKET SIGNALS
+  # ---------------------------------------------------------------------------
+
+  home_win_odds_open:
+    entity: fixture
+    dtype: float
+    category: market
+    primary_source: football_data
+    fallback_source: bookmaker_api
+    required: true
+    point_in_time: true
+    update_frequency: when_available
+    models_using: [market_baseline, optional_team_strength_blend]
+    leakage_risk: critical
+
+  draw_odds_open:
+    entity: fixture
+    dtype: float
+    category: market
+    primary_source: football_data
+    fallback_source: bookmaker_api
+    required: true
+    point_in_time: true
+    update_frequency: when_available
+    models_using: [market_baseline, optional_team_strength_blend]
+    leakage_risk: critical
+
+  away_win_odds_open:
+    entity: fixture
+    dtype: float
+    category: market
+    primary_source: football_data
+    fallback_source: bookmaker_api
+    required: true
+    point_in_time: true
+    update_frequency: when_available
+    models_using: [market_baseline, optional_team_strength_blend]
+    leakage_risk: critical
+
+  over_2_5_odds_predeadline:
+    entity: fixture
+    dtype: float_nullable
+    category: market
+    primary_source: bookmaker_api
+    fallback_source: football_data
+    required: false
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [market_baseline, optional_team_strength_blend]
+    leakage_risk: critical
+
+  team_clean_sheet_odds_predeadline:
+    entity: team_fixture
+    dtype: float_nullable
+    category: market
+    primary_source: bookmaker_api
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [market_baseline, clean_sheet_model]
+    leakage_risk: critical
+
+  player_anytime_scorer_odds_predeadline:
+    entity: player_fixture
+    dtype: float_nullable
+    category: market
+    primary_source: bookmaker_api
+    fallback_source: null
+    required: false
+    point_in_time: true
+    update_frequency: frequent
+    models_using: [market_baseline, goal_model_optional_blend]
+    leakage_risk: critical
+
+  market_timestamp:
+    entity: fixture
+    dtype: datetime
+    category: temporal_metadata
+    primary_source: source_metadata
+    required: true
+    point_in_time: true
+    update_frequency: per_market_record
+    models_using: [leakage_validation]
+    leakage_risk: critical
+
+  # ---------------------------------------------------------------------------
+  # M. USER FPL SQUAD STATE
+  # ---------------------------------------------------------------------------
+
+  fpl_manager_id:
+    entity: fpl_squad_snapshot
+    dtype: integer
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: low
+
+  squad_player_ids:
+    entity: fpl_squad_snapshot
+    dtype: string_list
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: high
+
+  purchase_prices:
+    entity: fpl_squad_snapshot
+    dtype: json
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: high
+
+  selling_prices:
+    entity: fpl_squad_snapshot
+    dtype: json
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: high
+
+  bank:
+    entity: fpl_squad_snapshot
+    dtype: float
+    unit: "million_GBP_FPL"
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: high
+
+  free_transfers:
+    entity: fpl_squad_snapshot
+    dtype: integer
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: high
+
+  available_chips:
+    entity: fpl_squad_snapshot
+    dtype: json
+    category: user_state
+    primary_source: official_fpl_api
+    fallback_source: manual_input
+    required: true
+    point_in_time: true
+    update_frequency: before_recommendation
+    models_using: [optimizer]
+    leakage_risk: high
+
+  # ---------------------------------------------------------------------------
+  # N. TEMPORAL / PROVENANCE METADATA
+  # ---------------------------------------------------------------------------
+
+  source_name:
+    entity: prediction_snapshot
+    dtype: string
+    category: provenance
+    primary_source: ingestion_metadata
+    required: true
+    point_in_time: false
+    update_frequency: per_record
+    models_using: [data_validation, reproducibility]
+    leakage_risk: none
+
+  source_record_id:
+    entity: prediction_snapshot
+    dtype: string
+    category: provenance
+    primary_source: ingestion_metadata
+    required: true
+    point_in_time: false
+    update_frequency: per_record
+    models_using: [data_validation, reproducibility]
+    leakage_risk: none
+
+  retrieved_at:
+    entity: prediction_snapshot
+    dtype: datetime
+    category: temporal_metadata
+    primary_source: ingestion_metadata
+    required: true
+    point_in_time: false
+    update_frequency: per_record
+    models_using: [leakage_validation, reproducibility]
+    leakage_risk: none
+
+  effective_at:
+    entity: prediction_snapshot
+    dtype: datetime
+    category: temporal_metadata
+    primary_source: source_or_inference
+    required: true
+    point_in_time: false
+    update_frequency: per_record
+    models_using: [leakage_validation]
+    leakage_risk: none
+    notes:
+      - "When source publication time is unknown, use the earliest defensible availability timestamp."
+
+  prediction_timestamp:
+    entity: prediction_snapshot
+    dtype: datetime
+    category: temporal_metadata
+    primary_source: system
+    required: true
+    point_in_time: false
+    update_frequency: per_prediction
+    models_using: [all]
+    leakage_risk: none
+
+  target_gameweek:
+    entity: prediction_snapshot
+    dtype: integer
+    category: temporal_metadata
+    primary_source: system
+    required: true
+    point_in_time: false
+    update_frequency: per_prediction
+    models_using: [all]
+    leakage_risk: none
+
+  model_version:
+    entity: prediction_snapshot
+    dtype: string
+    category: reproducibility
+    primary_source: system
+    required: true
+    point_in_time: false
+    update_frequency: per_prediction
+    models_using: [backtesting, reporting]
+    leakage_risk: none
+
+  dataset_version:
+    entity: prediction_snapshot
+    dtype: string
+    category: reproducibility
+    primary_source: system
+    required: true
+    point_in_time: false
+    update_frequency: per_prediction
+    models_using: [backtesting, reporting]
+    leakage_risk: none
+
+  feature_version:
+    entity: prediction_snapshot
+    dtype: string
+    category: reproducibility
+    primary_source: system
+    required: true
+    point_in_time: false
+    update_frequency: per_prediction
+    models_using: [backtesting, reporting]
+    leakage_risk: none
+
+# -----------------------------------------------------------------------------
+# DERIVED FEATURE GROUPS
+# -----------------------------------------------------------------------------
+
+derived_feature_groups:
+
+  rolling_player_form:
+    required: true
+    source_requirements:
+      - minutes_played
+      - expected_goals
+      - expected_assists
+      - shots
+      - shots_in_box
+      - shots_on_target
+      - big_chances
+      - big_chances_created
+      - key_passes
+      - touches_in_box
+    windows:
+      - matches_3
+      - matches_5
+      - matches_10
+      - days_30
+      - season_to_date
+    weighting:
+      default: exponential_time_decay
+      tune_via_backtest: true
+    leakage_policy: "Only completed matches before prediction_timestamp."
+
+  rolling_team_strength:
+    required: true
+    source_requirements:
+      - team_goals_for
+      - team_goals_against
+      - team_xg
+      - team_xga
+      - team_shots
+      - team_shots_on_target
+      - possession_pct
+    weighting:
+      opponent_adjustment: true
+      home_away_split: true
+      exponential_time_decay: true
+      tune_via_backtest: true
+
+  player_team_share:
+    required: true
+    outputs:
+      - share_team_npxg
+      - share_team_xa
+      - share_team_shots
+      - share_team_box_touches
+    purpose:
+      - "Separate player attacking involvement from team environment."
+    leakage_policy: "Only completed matches before prediction_timestamp."
+
+  minutes_features:
+    required: true
+    outputs:
+      - start_rate_last_3
+      - start_rate_last_5
+      - xmins_empirical_last_5
+      - avg_sub_off_minute
+      - bench_rate
+      - p_60_empirical
+      - p_75_empirical
+      - p_90_empirical
+      - workload_7d
+      - workload_14d
+    leakage_policy: "Only known appearances and schedules before prediction_timestamp."
+
+  fixture_context:
+    required: true
+    outputs:
+      - opponent_attack_strength
+      - opponent_defence_strength
+      - expected_team_goals
+      - expected_goals_against
+      - clean_sheet_probability
+      - home_advantage
+      - congestion_score
+
+  regime_change_features:
+    required: true
+    outputs:
+      - days_since_club_change
+      - days_since_manager_change
+      - days_since_role_change
+      - days_since_set_piece_change
+      - post_change_matches
+      - pre_change_weight
+      - post_change_weight
+    notes:
+      - "Weighting mechanism must be learned or validated in walk-forward backtests."
+
+# -----------------------------------------------------------------------------
+# TARGETS / MODEL OUTPUTS
+# -----------------------------------------------------------------------------
+
+model_targets:
+
+  minutes_model:
+    targets:
+      - started
+      - minutes_played
+      - "P(0 minutes)"
+      - "P(1-29)"
+      - "P(30-59)"
+      - "P(60-69)"
+      - "P(70-79)"
+      - "P(80-90)"
+    derived_outputs:
+      - p_start
+      - expected_minutes
+      - p_60_plus
+      - p_75_plus
+      - p_90
+
+  team_strength_model:
+    targets:
+      - team_goals_for
+      - team_goals_against
+      - team_xg
+      - team_xga
+    derived_outputs:
+      - expected_team_goals
+      - expected_goals_against
+      - clean_sheet_probability
+
+  goal_model:
+    targets:
+      - goals
+      - expected_goals
+      - non_penalty_expected_goals
+    derived_outputs:
+      - expected_player_goals
+      - p_goal
+      - p_2plus_goals
+
+  assist_model:
+    targets:
+      - assists
+      - expected_assists
+    derived_outputs:
+      - expected_player_assists
+      - p_assist
+
+  save_model:
+    targets:
+      - saves
+      - shots_on_target_faced
+    derived_outputs:
+      - expected_saves
+      - save_distribution
+
+  defensive_contribution_model:
+    targets:
+      - defensive_contributions
+    derived_outputs:
+      - expected_defensive_contributions
+      - p_defcon_points
+
+  bonus_model:
+    targets:
+      - bps
+      - bonus_points
+    derived_outputs:
+      - expected_bonus
+      - p_bonus_1
+      - p_bonus_2
+      - p_bonus_3
+
+  fpl_simulation:
+    outputs:
+      - expected_points
+      - median_points
+      - p_blank
+      - p_return
+      - p_5_plus
+      - p_8_plus
+      - p_10_plus
+      - p_15_plus
+      - haul_probability
+
+# -----------------------------------------------------------------------------
+# EXPLICITLY FORBIDDEN / HIGH-RISK FEATURES
+# -----------------------------------------------------------------------------
+
+forbidden_features:
+
+  historical_fpl_xp_without_predeadline_snapshot:
+    reason: "Potential look-ahead leakage."
+    default_action: exclude
+
+  final_season_totals_for_historical_prediction:
+    reason: "Contains future matches."
+    default_action: exclude
+
+  future_prices:
+    reason: "Unknown at historical prediction time."
+    default_action: exclude
+
+  future_ownership:
+    reason: "Unknown at historical prediction time."
+    default_action: exclude
+
+  future_injury_information:
+    reason: "Unknown at historical prediction time."
+    default_action: exclude
+
+  future_lineups:
+    reason: "Unknown at historical prediction time."
+    default_action: exclude
+
+  future_manager_changes:
+    reason: "Unknown at historical prediction time."
+    default_action: exclude
+
+  bookmaker_closing_odds_after_prediction_timestamp:
+    reason: "Contains information unavailable at decision time."
+    default_action: exclude
+
+# -----------------------------------------------------------------------------
+# DATA QUALITY REQUIREMENTS
+# -----------------------------------------------------------------------------
+
+quality_checks:
+
+  identity:
+    - "Every provider player ID maps to exactly one canonical player_id within an effective date range."
+    - "Every provider team ID maps to exactly one canonical team_id within an effective date range."
+    - "Duplicate fixture mappings are forbidden."
+
+  temporal:
+    - "effective_at <= prediction_timestamp for every training/backtest feature."
+    - "Target fixture kickoff must be > prediction_timestamp."
+    - "Historical snapshots must use latest defensible record available before prediction time."
+
+  numeric:
+    - "minutes_played between 0 and 120."
+    - "probabilities between 0 and 1."
+    - "xG/xA values non-negative."
+    - "FPL price positive."
+
+  consistency:
+    - "player_fixture team_id must match active player_team_spell at fixture time."
+    - "home_team_id != away_team_id."
+    - "started=true implies minutes_played > 0 unless source correction is explicitly recorded."
+    - "penalty_goals <= penalty_attempts."
+    - "goals_conceded non-negative."
+
+  missingness:
+    - "Missing advanced stats must be explicit nulls, not zeros."
+    - "Source outages must be distinguishable from genuine zero values."
+    - "Fallback use must be logged."
+
+# -----------------------------------------------------------------------------
+# INGESTION PRIORITY
+# -----------------------------------------------------------------------------
+
+ingestion_order:
+  - canonical_identity
+  - official_fpl_current_state
+  - fpl_point_in_time_snapshots
+  - historical_fpl_gameweeks
+  - fixtures_and_results
+  - advanced_player_match_stats
+  - advanced_team_match_stats
+  - lineups_and_formations
+  - injuries_and_suspensions
+  - transfers_and_manager_spells
+  - set_piece_context
+  - bookmaker_market
+  - manual_context_overrides
+  - derived_features

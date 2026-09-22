@@ -1,0 +1,26 @@
+﻿version: 1
+
+policy: exact_decision_layer_v1
+
+description: >
+  Decision-layer policy parameters.
+  These are strategy / optimization hyperparameters,
+  not official Fantasy Premier League rules.
+
+chip_timing:
+
+  version: exact_chip_timing_v1
+
+  provenance:
+    migrated_from: legacy_chip_timing_v2
+    tuning_on_2026_27_outcomes: false
+
+  evaluation_horizon_gameweeks: 6
+
+  minimum_incremental_ev: 1.0
+
+  future_opportunity_tolerance: 0.25
+
+  wildcard_minimum_weighted_gain: 8.0
+
+  free_hit_minimum_single_gameweek_gain: 6.0

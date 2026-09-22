@@ -1,0 +1,1227 @@
+version: 1
+
+description: >
+  Canonical model pipeline specification for the FPL Prediction & Decision Engine.
+  This file defines the model modules, their dependencies, input/output contracts,
+  execution order, uncertainty handling and interfaces between prediction,
+  simulation and optimization layers.
+
+global_rules:
+  language:
+    code: English
+    user_reports: Polish
+
+  default_planning_horizon_gameweeks: 6
+  default_monte_carlo_simulations: 10000
+
+  principles:
+    - "Do not predict total FPL points with one monolithic model."
+    - "Separate football-event prediction from FPL scoring."
+    - "Separate prediction from optimization."
+    - "Every module must expose a stable contract."
+    - "Every model must support point-in-time backtesting."
+    - "Every advanced model must be compared with a simpler baseline."
+    - "Provider-specific fields must be normalized before entering any model."
+    - "Missing advanced statistics must remain explicit; never silently replace missing with zero."
+    - "Model complexity is justified only by out-of-sample improvement."
+
+  prediction_timestamp_required: true
+  dataset_version_required: true
+  feature_version_required: true
+  model_version_required: true
+
+# =============================================================================
+# HIGH-LEVEL EXECUTION GRAPH
+# =============================================================================
+
+execution_graph:
+
+  stage_01_data_and_context:
+    parallel:
+      - team_strength_model
+      - player_talent_model
+      - tactical_context_engine
+      - availability_context
+
+  stage_02_minutes:
+    depends_on:
+      - tactical_context_engine
+      - availability_context
+    modules:
+      - minutes_model
+
+  stage_03_fixture_player_rates:
+    depends_on:
+      - team_strength_model
+      - player_talent_model
+      - tactical_context_engine
+      - minutes_model
+    modules:
+      - player_fixture_rate_model
+
+  stage_04_event_models:
+    depends_on:
+      - team_strength_model
+      - player_fixture_rate_model
+      - minutes_model
+    parallel:
+      - goal_model
+      - assist_model
+      - clean_sheet_model
+      - save_model
+      - defensive_contribution_model
+      - card_model
+      - penalty_save_model
+      - bonus_model
+
+  stage_05_match_simulation:
+    depends_on:
+      - goal_model
+      - assist_model
+      - clean_sheet_model
+      - save_model
+      - defensive_contribution_model
+      - card_model
+      - penalty_save_model
+      - bonus_model
+      - minutes_model
+    modules:
+      - monte_carlo_match_simulator
+
+  stage_06_fpl_scoring:
+    depends_on:
+      - monte_carlo_match_simulator
+    modules:
+      - fpl_scoring_engine
+
+  stage_07_projection_aggregation:
+    depends_on:
+      - fpl_scoring_engine
+    modules:
+      - multi_gameweek_projection_engine
+
+  stage_08_decision:
+    depends_on:
+      - multi_gameweek_projection_engine
+    modules:
+      - decision_optimizer
+      - sensitivity_engine
+
+# =============================================================================
+# SHARED INPUT CONTRACTS
+# =============================================================================
+
+shared_inputs:
+
+  prediction_context:
+    required_fields:
+      - prediction_timestamp
+      - target_gameweek
+      - planning_horizon_gameweeks
+      - dataset_version
+      - feature_version
+
+  player_context:
+    required_fields:
+      - player_id
+      - team_id
+      - fpl_position
+      - current_price
+
+  fixture_context:
+    required_fields:
+      - fixture_id
+      - kickoff_time
+      - home_team_id
+      - away_team_id
+      - competition_id
+
+  temporal_rule:
+    invariant: "effective_at <= prediction_timestamp"
+
+# =============================================================================
+# MODULES
+# =============================================================================
+
+modules:
+
+  # ---------------------------------------------------------------------------
+  # TEAM STRENGTH
+  # ---------------------------------------------------------------------------
+
+  team_strength_model:
+    type: predictive_model
+    responsibility: >
+      Estimate current and fixture-specific attacking and defensive strength
+      of each team independently from individual FPL points.
+
+    candidate_methods:
+      baseline:
+        - poisson_goals_model
+        - rolling_xg_with_time_decay
+      advanced:
+        - dixon_coles
+        - hierarchical_poisson
+        - catboost_residual_correction
+      final_selection_rule: >
+        Choose the simplest method that delivers the best calibrated
+        out-of-sample performance in walk-forward backtests.
+
+    inputs:
+      required:
+        - team_goals_for
+        - team_goals_against
+        - team_xg
+        - team_xga
+        - home_away
+        - opponent_team_id
+        - kickoff_time
+      optional:
+        - team_shots
+        - team_shots_on_target
+        - team_big_chances
+        - possession_pct
+        - field_tilt
+        - bookmaker_market_signal
+        - manager_regime
+        - fixture_congestion
+
+    transformations:
+      - opponent_strength_adjustment
+      - home_away_split
+      - exponential_time_decay
+      - season_to_date_features
+      - rolling_form_features
+      - manager_regime_segmentation
+
+    outputs:
+      - team_attack_strength
+      - team_defence_strength
+      - expected_team_goals
+      - expected_goals_against
+      - clean_sheet_probability
+      - team_score_distribution
+
+    output_contract:
+      team_attack_strength:
+        dtype: float
+      team_defence_strength:
+        dtype: float
+      expected_team_goals:
+        dtype: float
+        minimum: 0.0
+      expected_goals_against:
+        dtype: float
+        minimum: 0.0
+      clean_sheet_probability:
+        dtype: float
+        range: [0.0, 1.0]
+      team_score_distribution:
+        dtype: probability_distribution
+
+    metrics:
+      - poisson_deviance
+      - log_loss_score_distribution
+      - brier_clean_sheet
+      - calibration_error
+      - mae_team_goals
+      - spearman_fixture_attack_rank
+
+  # ---------------------------------------------------------------------------
+  # PLAYER TALENT
+  # ---------------------------------------------------------------------------
+
+  player_talent_model:
+    type: predictive_model
+    responsibility: >
+      Estimate underlying player attacking and defensive ability separately
+      from current team environment.
+
+    candidate_methods:
+      baseline:
+        - exponentially_weighted_per90_rates
+        - rolling_team_share_model
+      advanced:
+        - hierarchical_bayesian_shrinkage
+        - catboost_context_adjustment
+        - empirical_bayes_with_regime_decay
+
+    inputs:
+      required:
+        - minutes_played
+        - expected_goals
+        - expected_assists
+        - team_xg
+        - team_xga
+        - tactical_role
+        - fpl_position
+      optional:
+        - non_penalty_expected_goals
+        - shots
+        - shots_in_box
+        - shots_on_target
+        - big_chances
+        - big_chances_created
+        - key_passes
+        - touches_in_box
+        - progressive_carries
+        - progressive_passes
+        - expected_threat
+        - cross_league_history
+        - league_strength_coefficient
+
+    transformations:
+      - per90_rates
+      - team_share_features
+      - opponent_adjustment
+      - exponential_time_decay
+      - age_adjustment
+      - cross_league_adjustment
+      - regime_change_weighting
+      - small_sample_shrinkage
+
+    outputs:
+      - talent_npxg_per90
+      - talent_xa_per90
+      - talent_shot_rate_per90
+      - talent_box_touch_rate_per90
+      - talent_goal_conversion_component
+      - talent_creation_component
+      - talent_defensive_contribution_rate
+      - player_talent_uncertainty
+
+    output_contract:
+      talent_npxg_per90:
+        dtype: float
+        minimum: 0.0
+      talent_xa_per90:
+        dtype: float
+        minimum: 0.0
+      player_talent_uncertainty:
+        dtype: float
+        minimum: 0.0
+
+    metrics:
+      - out_of_sample_npxg_deviance
+      - out_of_sample_xa_error
+      - rank_correlation_future_xgi
+      - calibration_by_minutes_bucket
+
+  # ---------------------------------------------------------------------------
+  # TACTICAL CONTEXT
+  # ---------------------------------------------------------------------------
+
+  tactical_context_engine:
+    type: deterministic_plus_probabilistic_context
+    responsibility: >
+      Represent tactical role, team environment and regime changes that alter
+      the interpretation of historical player statistics.
+
+    inputs:
+      required:
+        - player_id
+        - team_id
+        - manager_id
+        - tactical_role
+        - starting_position
+        - team_starting_formation
+      optional:
+        - average_position_x
+        - average_position_y
+        - set_piece_context
+        - squad_competition_score
+        - manual_context_overrides
+        - transfer_history
+
+    regime_changes:
+      supported:
+        - club_change
+        - league_change
+        - manager_change
+        - formation_change
+        - tactical_role_change
+        - fpl_position_change
+        - set_piece_change
+        - injury_return
+        - squad_competition_change
+
+    outputs:
+      - current_tactical_role
+      - role_confidence
+      - regime_change_flag
+      - regime_change_type
+      - regime_change_confidence
+      - historical_weight_multiplier
+      - current_role_multiplier_goal
+      - current_role_multiplier_assist
+      - current_role_multiplier_minutes
+      - set_piece_context
+
+    rules:
+      - "Manual overrides have highest priority when valid for prediction_timestamp."
+      - "A regime change must never delete historical data."
+      - "A regime change changes the weight/interpretation of historical data."
+
+  # ---------------------------------------------------------------------------
+  # AVAILABILITY CONTEXT
+  # ---------------------------------------------------------------------------
+
+  availability_context:
+    type: deterministic_context
+    responsibility: >
+      Consolidate injury, suspension, player news and workload information
+      into a point-in-time availability representation.
+
+    inputs:
+      required:
+        - fpl_status
+        - chance_of_playing_next_round
+        - player_news
+        - injury_status
+        - suspension_status
+      optional:
+        - injury_type
+        - injury_start_date
+        - expected_return_date
+        - suspension_matches_remaining
+        - minutes_last_7_days
+        - minutes_last_14_days
+
+    outputs:
+      - availability_probability
+      - injury_severity_bucket
+      - suspension_block
+      - workload_score
+      - availability_confidence
+
+  # ---------------------------------------------------------------------------
+  # MINUTES MODEL
+  # ---------------------------------------------------------------------------
+
+  minutes_model:
+    type: predictive_model
+    responsibility: >
+      Estimate the probability distribution of player minutes for the target fixture.
+
+    candidate_methods:
+      baseline:
+        - empirical_start_rate
+        - rolling_minutes_distribution
+      advanced:
+        - catboost_classifier_regressor
+        - hurdle_model
+        - ordinal_minutes_model
+        - mixture_model
+
+    inputs:
+      required:
+        - recent_starts
+        - recent_minutes
+        - recent_substitution_pattern
+        - tactical_role
+        - squad_competition_score
+        - availability_probability
+        - suspension_block
+        - rest_days_before_fixture
+        - matches_last_7_days
+        - matches_next_7_days_known
+      optional:
+        - european_match_before
+        - european_match_after
+        - domestic_cup_match_before
+        - domestic_cup_match_after
+        - manager_id
+        - manager_rotation_history
+        - injury_return_context
+        - age
+        - historical_role_minutes
+
+    targets:
+      - started
+      - minutes_played
+
+    outputs:
+      - p_zero_minutes
+      - p_start
+      - expected_minutes
+      - p_60_plus
+      - p_75_plus
+      - p_90
+      - minute_bucket_distribution
+      - minutes_uncertainty
+
+    minute_buckets:
+      - "0"
+      - "1-29"
+      - "30-59"
+      - "60-69"
+      - "70-79"
+      - "80-89"
+      - "90+"
+
+    invariants:
+      - "0 <= all probabilities <= 1"
+      - "minute bucket probabilities sum to 1"
+      - "expected_minutes >= 0"
+      - "expected_minutes <= 120"
+
+    metrics:
+      - mae_minutes
+      - brier_start
+      - brier_60_plus
+      - log_loss_minute_bucket
+      - calibration_start
+      - calibration_60_plus
+
+  # ---------------------------------------------------------------------------
+  # PLAYER-FIXTURE RATE MODEL
+  # ---------------------------------------------------------------------------
+
+  player_fixture_rate_model:
+    type: hybrid_context_adjustment
+    responsibility: >
+      Convert team-independent player talent into fixture-specific per-minute
+      and per-appearance event rates.
+
+    inputs:
+      required:
+        - player_talent_model.outputs
+        - team_strength_model.outputs
+        - tactical_context_engine.outputs
+        - minutes_model.outputs
+      optional:
+        - set_piece_context
+        - bookmaker_market_signal
+
+    conceptual_formula:
+      attacking_rate: >
+        player_talent × team_environment × tactical_role × opponent_strength ×
+        set_piece_context × home_away_context
+      minutes_application: >
+        Fixture-specific rates must be integrated over the predicted minutes distribution,
+        not simply multiplied by expected_minutes when nonlinear effects matter.
+
+    outputs:
+      - fixture_npxg_per90
+      - fixture_penalty_xg_per90
+      - fixture_xa_per90
+      - fixture_shots_per90
+      - fixture_box_touches_per90
+      - fixture_defensive_contributions_per90
+      - fixture_save_opportunity_rate
+      - player_fixture_rate_uncertainty
+
+  # ---------------------------------------------------------------------------
+  # GOAL MODEL
+  # ---------------------------------------------------------------------------
+
+  goal_model:
+    type: event_model
+    responsibility: "Predict player scoring distribution."
+
+    candidate_methods:
+      - poisson
+      - zero_inflated_poisson_if_justified
+      - bernoulli_goal_probability
+      - monte_carlo_goal_allocation
+
+    inputs:
+      required:
+        - fixture_npxg_per90
+        - fixture_penalty_xg_per90
+        - minutes_model.outputs
+        - expected_team_goals
+      optional:
+        - penalty_taker_rank
+        - penalty_taker_confidence
+        - direct_free_kick_rank
+        - bookmaker_anytime_scorer_odds
+
+    outputs:
+      - expected_player_goals
+      - p_goal
+      - p_two_plus_goals
+      - goal_count_distribution
+
+    invariants:
+      - "Sum of player goal expectations should be coherent with expected team goals after own-goal adjustment."
+
+  # ---------------------------------------------------------------------------
+  # ASSIST MODEL
+  # ---------------------------------------------------------------------------
+
+  assist_model:
+    type: event_model
+    responsibility: "Predict player assist distribution."
+
+    inputs:
+      required:
+        - fixture_xa_per90
+        - minutes_model.outputs
+        - expected_team_goals
+      optional:
+        - corner_rank_left
+        - corner_rank_right
+        - indirect_free_kick_rank
+        - big_chances_created
+        - key_passes
+
+    outputs:
+      - expected_player_assists
+      - p_assist
+      - p_two_plus_assists
+      - assist_count_distribution
+
+  # ---------------------------------------------------------------------------
+  # CLEAN SHEET MODEL
+  # ---------------------------------------------------------------------------
+
+  clean_sheet_model:
+    type: event_model
+    responsibility: >
+      Convert team defensive expectation and player minutes distribution
+      into player clean-sheet probability.
+
+    inputs:
+      required:
+        - clean_sheet_probability
+        - minutes_model.outputs
+        - fpl_position
+
+    outputs:
+      - player_clean_sheet_probability
+      - expected_clean_sheet_points_before_scoring_rules
+
+    rules:
+      - "Player clean-sheet eligibility must respect FPL minute thresholds."
+      - "Team clean sheet and player clean sheet are not identical when substitution timing matters."
+
+  # ---------------------------------------------------------------------------
+  # SAVE MODEL
+  # ---------------------------------------------------------------------------
+
+  save_model:
+    type: event_model
+    responsibility: "Predict goalkeeper save distribution."
+
+    inputs:
+      required:
+        - expected_goals_against
+        - opponent_attack_strength
+        - minutes_model.outputs
+      optional:
+        - shots_on_target_faced_history
+        - save_rate_history
+        - post_shot_expected_goals_faced
+        - goalkeeper_talent
+
+    outputs:
+      - expected_saves
+      - save_count_distribution
+      - p_three_plus_saves
+      - p_six_plus_saves
+
+  # ---------------------------------------------------------------------------
+  # PENALTY SAVE MODEL
+  # ---------------------------------------------------------------------------
+
+  penalty_save_model:
+    type: event_model
+    responsibility: "Estimate expected FPL contribution from penalty saves."
+
+    inputs:
+      required:
+        - goalkeeper_id
+        - opponent_team_id
+      optional:
+        - historical_penalty_save_rate
+        - opponent_penalty_frequency
+        - bookmaker_penalty_market
+
+    outputs:
+      - p_penalty_faced
+      - p_penalty_saved_given_faced
+      - expected_penalty_saves
+
+  # ---------------------------------------------------------------------------
+  # DEFENSIVE CONTRIBUTION MODEL
+  # ---------------------------------------------------------------------------
+
+  defensive_contribution_model:
+    type: event_model
+    responsibility: >
+      Predict defensive-contribution distribution under current FPL rules.
+
+    inputs:
+      required:
+        - fixture_defensive_contributions_per90
+        - minutes_model.outputs
+        - fpl_position
+      optional:
+        - tackles
+        - interceptions
+        - clearances
+        - blocks
+        - recoveries
+        - aerial_duels_won
+        - opponent_possession_expectation
+        - opponent_attack_style
+
+    outputs:
+      - expected_defensive_contributions
+      - defensive_contribution_distribution
+      - p_defcon_points
+
+  # ---------------------------------------------------------------------------
+  # CARD MODEL
+  # ---------------------------------------------------------------------------
+
+  card_model:
+    type: event_model
+    responsibility: "Estimate yellow/red card risk."
+
+    inputs:
+      required:
+        - minutes_model.outputs
+        - historical_card_rate
+      optional:
+        - referee_context
+        - player_role
+        - opponent_dribble_rate
+        - derby_or_high_intensity_flag
+
+    outputs:
+      - p_yellow
+      - p_red
+      - expected_card_points
+
+  # ---------------------------------------------------------------------------
+  # BONUS MODEL
+  # ---------------------------------------------------------------------------
+
+  bonus_model:
+    type: event_model
+    responsibility: >
+      Estimate bonus/BPS outcome conditional on simulated match events.
+
+    modelling_rule: >
+      Prefer modelling BPS components and ranking within the simulated fixture
+      over directly regressing final bonus points when feasible.
+
+    inputs:
+      required:
+        - historical_bps_rate
+        - minutes_model.outputs
+      optional:
+        - simulated_goals
+        - simulated_assists
+        - simulated_clean_sheet
+        - simulated_saves
+        - simulated_cards
+        - position
+
+    outputs:
+      - expected_bonus
+      - p_bonus_1
+      - p_bonus_2
+      - p_bonus_3
+      - bonus_distribution
+
+  # ---------------------------------------------------------------------------
+  # MONTE CARLO MATCH SIMULATOR
+  # ---------------------------------------------------------------------------
+
+  monte_carlo_match_simulator:
+    type: simulation
+    responsibility: >
+      Generate coherent, correlated match outcomes for teams and players.
+
+    default_simulations: 10000
+    configurable: true
+
+    inputs:
+      required:
+        - team_score_distribution
+        - minutes_model.outputs
+        - goal_model.outputs
+        - assist_model.outputs
+        - clean_sheet_model.outputs
+        - save_model.outputs
+        - defensive_contribution_model.outputs
+        - card_model.outputs
+        - penalty_save_model.outputs
+      optional:
+        - bonus_model.parameters
+        - correlation_parameters
+
+    correlation_rules:
+      - "A team clean sheet is shared by eligible players from that team."
+      - "Team goal count constrains player goal allocation."
+      - "Assists must be linked to compatible simulated goals."
+      - "Goalkeeper saves depend on opponent shot/attack process."
+      - "Bonus is assigned within a shared fixture state."
+      - "Player outcomes must not be simulated independently when the football event is shared."
+
+    outputs:
+      - simulation_fixture_table
+      - simulation_player_table
+      - event_correlation_diagnostics
+
+    reproducibility:
+      random_seed_required: true
+
+  # ---------------------------------------------------------------------------
+  # FPL SCORING ENGINE
+  # ---------------------------------------------------------------------------
+
+  fpl_scoring_engine:
+    type: deterministic_scoring
+    responsibility: >
+      Convert each simulated football outcome into official FPL points using
+      season-specific scoring configuration.
+
+    scoring_config_path: "docs/03_SIMULATION/scoring_rules.yaml"
+
+    inputs:
+      required:
+        - simulation_player_table
+        - fpl_position
+        - season_scoring_rules
+
+    outputs:
+      - simulated_fpl_points
+      - scoring_breakdown
+
+    required_breakdown:
+      - appearance_points
+      - goal_points
+      - assist_points
+      - clean_sheet_points
+      - save_points
+      - penalty_save_points
+      - defensive_contribution_points
+      - bonus_points
+      - card_points
+      - own_goal_points
+      - missed_penalty_points
+      - goals_conceded_points
+
+    rules:
+      - "No FPL scoring rule may be hardcoded in event models."
+      - "Season changes must be handled through scoring config."
+
+  # ---------------------------------------------------------------------------
+  # MULTI-GW PROJECTION ENGINE
+  # ---------------------------------------------------------------------------
+
+  multi_gameweek_projection_engine:
+    type: aggregation
+    responsibility: >
+      Aggregate fixture-level point distributions into Gameweek and multi-GW
+      projections while preserving uncertainty.
+
+    default_horizon: 6
+
+    horizon_weights:
+      gw_plus_1: 1.00
+      gw_plus_2: 0.95
+      gw_plus_3: 0.90
+      gw_plus_4: 0.85
+      gw_plus_5: 0.80
+      gw_plus_6: 0.75
+      tune_via_backtest: true
+
+    inputs:
+      required:
+        - simulated_fpl_points
+        - current_price
+        - target_gameweek
+
+    outputs:
+      per_fixture:
+        - expected_points
+        - median_points
+        - p_blank
+        - p_return
+        - p_5_plus
+        - p_8_plus
+        - p_10_plus
+        - p_15_plus
+
+      per_gameweek:
+        - expected_points
+        - median_points
+        - p_blank
+        - p_return
+        - p_10_plus
+
+      horizon:
+        - ev_next_1
+        - ev_next_3
+        - ev_next_6
+        - weighted_ev_next_6
+        - ev_per_million_next_1
+        - ev_per_million_next_3
+        - ev_per_million_next_6
+        - projection_uncertainty
+
+    rules:
+      - "EV/price is a value metric, not a replacement for raw EV."
+      - "Double Gameweeks aggregate all fixtures in that Gameweek."
+      - "Blank Gameweeks produce zero fixture contribution unless chip logic changes squad state."
+
+  # ---------------------------------------------------------------------------
+  # DECISION OPTIMIZER
+  # ---------------------------------------------------------------------------
+
+  decision_optimizer:
+    type: mathematical_optimization
+    responsibility: >
+      Select squad actions that maximize expected FPL value under official
+      constraints and multi-GW planning.
+
+    preferred_method:
+      - milp
+      - highs_or_ortools
+
+    inputs:
+      required:
+        - multi_gameweek_projection_engine.outputs
+        - current_squad
+        - current_prices
+        - purchase_prices
+        - selling_prices
+        - bank
+        - free_transfers
+        - fpl_rules
+      optional:
+        - available_chips
+        - risk_preference
+        - transfer_horizon_constraints
+
+    supported_actions:
+      - roll_free_transfer
+      - one_transfer
+      - multiple_free_transfers
+      - hit_minus_4
+      - squad_selection
+      - captain_selection
+      - vice_captain_selection
+      - bench_order
+      - wildcard
+      - free_hit
+      - bench_boost
+      - triple_captain
+
+    objective_components:
+      - expected_points
+      - weighted_future_expected_points
+      - transfer_hit_cost
+      - value_of_rolling_transfer
+      - optional_risk_adjustment
+
+    hard_rules:
+      - "ROLL FT must always be a candidate decision."
+      - "A transfer must never be recommended solely because a transfer is available."
+      - "Hit cost must be subtracted explicitly."
+      - "All FPL squad constraints come from configuration, not scattered hardcoded values."
+
+    outputs:
+      - recommended_action
+      - recommended_transfers
+      - starting_xi
+      - bench_order
+      - captain
+      - vice_captain
+      - gross_expected_gain
+      - transfer_cost
+      - net_expected_gain
+      - expected_points_by_gameweek
+      - alternative_actions
+
+  # ---------------------------------------------------------------------------
+  # SENSITIVITY ENGINE
+  # ---------------------------------------------------------------------------
+
+  sensitivity_engine:
+    type: robustness_analysis
+    responsibility: >
+      Measure how stable recommendations are to realistic uncertainty
+      in model inputs and projections.
+
+    default_runs: 500
+
+    perturbations:
+      - expected_minutes
+      - player_goal_rate
+      - player_assist_rate
+      - team_attack_strength
+      - team_defence_strength
+      - clean_sheet_probability
+      - tactical_role_multiplier
+
+    perturbation_source:
+      preferred: model_uncertainty_estimates
+      fallback: configured_reasonable_distributions
+
+    outputs:
+      - action_selection_frequency
+      - transfer_selection_frequency
+      - captain_selection_frequency
+      - recommendation_confidence
+      - decision_margin
+      - unstable_assumptions
+
+    interpretation:
+      high_confidence: ">= 0.80"
+      medium_confidence: "0.60-0.799999"
+      low_confidence: "< 0.60"
+
+# =============================================================================
+# STANDARD PLAYER PROJECTION CONTRACT
+# =============================================================================
+
+player_projection_contract:
+
+  identifiers:
+    - player_id
+    - fixture_id
+    - target_gameweek
+    - prediction_timestamp
+
+  context:
+    - team_id
+    - opponent_team_id
+    - is_home
+    - fpl_position
+    - current_price
+
+  minutes:
+    - p_start
+    - expected_minutes
+    - p_60_plus
+    - p_75_plus
+    - p_90
+
+  football_expectation:
+    - expected_player_goals
+    - expected_player_assists
+    - p_goal
+    - p_assist
+    - player_clean_sheet_probability
+    - expected_saves
+    - expected_defensive_contributions
+    - expected_bonus
+
+  fpl_distribution:
+    - expected_points
+    - median_points
+    - p_blank
+    - p_return
+    - p_5_plus
+    - p_8_plus
+    - p_10_plus
+    - p_15_plus
+
+  multi_gameweek:
+    - ev_next_1
+    - ev_next_3
+    - ev_next_6
+    - weighted_ev_next_6
+    - ev_per_million_next_1
+    - ev_per_million_next_3
+    - ev_per_million_next_6
+
+  uncertainty:
+    - minutes_uncertainty
+    - player_talent_uncertainty
+    - projection_uncertainty
+
+  provenance:
+    - model_version
+    - dataset_version
+    - feature_version
+
+# =============================================================================
+# MODEL INTERFACE RULES
+# =============================================================================
+
+interface_rules:
+
+  stable_contracts:
+    - "Modules communicate through canonical schemas."
+    - "Provider adapters never leak provider-specific field names into model interfaces."
+    - "Model outputs must be versioned."
+
+  missing_values:
+    - "Models must explicitly declare which missing inputs are supported."
+    - "Missing must not be converted to zero unless zero is semantically correct."
+    - "Fallback-derived values must carry provenance."
+
+  uncertainty:
+    - "Major predictive modules should expose uncertainty whenever feasible."
+    - "Optimizer sensitivity analysis should use model uncertainty, not arbitrary noise when available."
+
+  reproducibility:
+    required_fields:
+      - prediction_timestamp
+      - model_version
+      - dataset_version
+      - feature_version
+      - random_seed
+
+# =============================================================================
+# VALIDATION GATES
+# =============================================================================
+
+validation_gates:
+
+  team_strength_model:
+    must_beat:
+      - naive_goals_average
+      - rolling_xg_baseline
+    required_before_downstream_use: true
+
+  minutes_model:
+    must_beat:
+      - recent_start_rate_baseline
+      - recent_minutes_average
+    required_before_downstream_use: true
+
+  player_talent_model:
+    must_beat:
+      - season_to_date_per90
+      - exponentially_weighted_per90
+    required_before_downstream_use: true
+
+  event_models:
+    required:
+      - calibration_check
+      - out_of_sample_metric_check
+
+  monte_carlo_match_simulator:
+    required:
+      - probability_mass_sanity_checks
+      - correlation_sanity_checks
+      - reproducibility_test
+
+  optimizer:
+    required:
+      - constraint_unit_tests
+      - deterministic_fixture_test_cases
+      - hit_cost_tests
+      - roll_ft_tests
+
+# =============================================================================
+# BASELINES
+# =============================================================================
+
+baselines:
+
+  team_strength:
+    - average_goals_for_against
+    - rolling_xg
+
+  minutes:
+    - previous_match_minutes
+    - average_minutes_last_5
+    - start_rate_last_5
+
+  player_attack:
+    - season_to_date_xgi_per90
+    - rolling_xgi_per90
+
+  fpl_points:
+    - points_per_game
+    - points_per_90
+    - simple_xgi_plus_fixture_baseline
+
+  market:
+    - bookmaker_implied_team_probabilities
+
+  decision:
+    - no_transfer
+    - highest_next_gw_ev_transfer
+    - highest_six_gw_ev_transfer
+
+# =============================================================================
+# IMPLEMENTATION ORDER
+# =============================================================================
+
+recommended_implementation_order:
+
+  - id: MODEL-001
+    module: team_strength_model
+    reason: "Defines fixture scoring environment used by downstream event models."
+
+  - id: MODEL-002
+    module: tactical_context_engine
+    reason: "Provides regime and role interpretation before player/minutes modelling."
+
+  - id: MODEL-003
+    module: availability_context
+    reason: "Required for point-in-time player availability."
+
+  - id: MODEL-004
+    module: minutes_model
+    reason: "Expected minutes materially affect every downstream player projection."
+
+  - id: MODEL-005
+    module: player_talent_model
+    reason: "Separates player ability from team environment."
+
+  - id: MODEL-006
+    module: player_fixture_rate_model
+    reason: "Combines player, team, tactical and fixture context."
+
+  - id: MODEL-007
+    module: event_models
+    reason: "Produces football-event probabilities."
+
+  - id: SIM-001
+    module: monte_carlo_match_simulator
+
+  - id: SIM-002
+    module: fpl_scoring_engine
+
+  - id: PROJ-001
+    module: multi_gameweek_projection_engine
+
+  - id: OPT-001
+    module: decision_optimizer
+
+  - id: OPT-002
+    module: sensitivity_engine
+
+# =============================================================================
+# ACCEPTANCE CRITERIA
+# =============================================================================
+
+acceptance_criteria:
+
+  architecture:
+    - "No monolithic direct-FPL-points model is required for the main system."
+    - "Prediction and optimization remain separate layers."
+    - "All modules expose stable canonical contracts."
+    - "Provider-specific schemas do not enter model code."
+
+  prediction:
+    - "Player projections contain xMins, football-event expectations and FPL distributions."
+    - "6-GW projections are available."
+    - "Projection uncertainty is represented."
+
+  simulation:
+    - "Shared match events are correlated."
+    - "At least 10,000 simulations are supported."
+    - "Simulation is reproducible with a fixed seed."
+
+  optimization:
+    - "ROLL FT is supported."
+    - "Hits are represented as explicit point costs."
+    - "Captain, vice-captain, XI and bench are optimized."
+    - "Multi-GW planning is supported."
+
+  validation:
+    - "All major predictive modules are validated out-of-sample."
+    - "Complex models must beat their baselines before being promoted."
+    - "Point-in-time leakage checks pass."

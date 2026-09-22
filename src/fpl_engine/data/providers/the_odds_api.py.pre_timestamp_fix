@@ -1,0 +1,1898 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+import json
+import math
+from typing import Any
+
+import httpx
+
+from fpl_engine.data.http_cache import (
+    CacheRequest,
+    CachedHttpResponse,
+    HttpCache,
+    HttpCacheError,
+    HttpResponse,
+)
+from fpl_engine.data.market_odds import (
+    MarketKind,
+    MarketQuote,
+    MarketSide,
+)
+from fpl_engine.data.raw_store import (
+    RawSnapshot,
+    RawStore,
+    RawStoreError,
+)
+
+
+PROVIDER = "the_odds_api"
+DEFAULT_BASE_URL = "https://api.the-odds-api.com/v4"
+
+DEFAULT_SPORT = "soccer_epl"
+
+SUPPORTED_MARKETS = (
+    "player_goal_scorer_anytime",
+    "player_assists",
+    "player_shots",
+    "player_shots_on_target",
+)
+
+_MARKET_MAP = {
+    "player_goal_scorer_anytime": MarketKind.ANYTIME_GOAL,
+    "player_assists": MarketKind.ASSIST,
+    "player_shots": MarketKind.SHOTS,
+    "player_shots_on_target": MarketKind.SHOTS_ON_TARGET,
+}
+
+_SIDE_MAP = {
+    "yes": MarketSide.YES,
+    "no": MarketSide.NO,
+    "over": MarketSide.OVER,
+    "under": MarketSide.UNDER,
+}
+
+
+class TheOddsApiError(RuntimeError):
+    """Base error for The Odds API integration."""
+
+
+class TheOddsApiValidationError(TheOddsApiError):
+    """Invalid adapter input or provider payload."""
+
+
+class TheOddsApiRequestError(TheOddsApiError):
+    """Network/transport failure."""
+
+
+class TheOddsApiResponseError(TheOddsApiError):
+    """Provider returned an unsuccessful response."""
+
+
+class TheOddsApiQuotaExceededError(
+    TheOddsApiResponseError
+):
+    """Provider quota/rate limit was reached."""
+
+
+class TheOddsApiParseError(TheOddsApiError):
+    """Provider payload cannot be safely interpreted."""
+
+
+class TheOddsApiStorageError(TheOddsApiError):
+    """RawStore or HttpCache failed."""
+
+
+class TheOddsApiLeakageError(TheOddsApiError):
+    """Historical response violates the PIT contract."""
+
+
+def _utc(
+    value: datetime,
+    name: str,
+) -> datetime:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise TheOddsApiValidationError(
+            f"{name} must be timezone-aware"
+        )
+
+    return value.astimezone(timezone.utc)
+
+
+def _parse_datetime(
+    value: object,
+    name: str,
+) -> datetime:
+    if not isinstance(value, str):
+        raise TheOddsApiParseError(
+            f"{name} must be an ISO timestamp"
+        )
+
+    try:
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+    except ValueError as exc:
+        raise TheOddsApiParseError(
+            f"invalid {name}: {value!r}"
+        ) from exc
+
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() is None
+    ):
+        raise TheOddsApiParseError(
+            f"{name} must be timezone-aware"
+        )
+
+    return parsed.astimezone(
+        timezone.utc
+    )
+
+
+def _iso_z(
+    value: datetime,
+) -> str:
+    return (
+        _utc(value, "date")
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _non_empty(
+    value: object,
+    name: str,
+) -> str:
+    if not isinstance(value, str):
+        raise TheOddsApiValidationError(
+            f"{name} must be a non-empty string"
+        )
+
+    result = value.strip()
+
+    if not result:
+        raise TheOddsApiValidationError(
+            f"{name} must be a non-empty string"
+        )
+
+    return result
+
+
+def _json_value(
+    body: bytes,
+) -> Any:
+    try:
+        return json.loads(
+            body.decode("utf-8")
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise TheOddsApiParseError(
+            "provider returned invalid JSON"
+        ) from exc
+
+
+def _json_object(
+    body: bytes,
+) -> Mapping[str, Any]:
+    payload = _json_value(
+        body
+    )
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        raise TheOddsApiParseError(
+            "provider response must be a JSON object"
+        )
+
+    return payload
+
+
+@dataclass(frozen=True)
+class TheOddsApiResult:
+    provider_event_id: str
+    sport: str
+    payload: Mapping[str, Any]
+    response: CachedHttpResponse
+    retrieved_at: datetime
+    raw_snapshot: RawSnapshot | None
+    historical: bool
+    requested_snapshot_timestamp: datetime | None = None
+    snapshot_timestamp: datetime | None = None
+    previous_snapshot_timestamp: datetime | None = None
+    next_snapshot_timestamp: datetime | None = None
+
+    @property
+    def from_cache(self) -> bool:
+        return self.response.from_cache
+
+
+@dataclass(frozen=True)
+class TheOddsApiEvent:
+    provider_event_id: str
+    sport: str
+    commence_time: datetime
+    home_team: str
+    away_team: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "provider_event_id",
+            _non_empty(
+                self.provider_event_id,
+                "provider_event_id",
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "sport",
+            _non_empty(
+                self.sport,
+                "sport",
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "commence_time",
+            _utc(
+                self.commence_time,
+                "commence_time",
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "home_team",
+            _non_empty(
+                self.home_team,
+                "home_team",
+            ),
+        )
+
+        object.__setattr__(
+            self,
+            "away_team",
+            _non_empty(
+                self.away_team,
+                "away_team",
+            ),
+        )
+
+        if self.home_team == self.away_team:
+            raise TheOddsApiValidationError(
+                "home and away team must differ"
+            )
+
+
+@dataclass(frozen=True)
+class TheOddsApiEventsResult:
+    sport: str
+    events: tuple[TheOddsApiEvent, ...]
+    response: CachedHttpResponse
+    retrieved_at: datetime
+    raw_snapshot: RawSnapshot | None
+    historical: bool
+    requested_snapshot_timestamp: datetime | None = None
+    snapshot_timestamp: datetime | None = None
+    previous_snapshot_timestamp: datetime | None = None
+    next_snapshot_timestamp: datetime | None = None
+
+    @property
+    def from_cache(self) -> bool:
+        return self.response.from_cache
+
+
+@dataclass(frozen=True)
+class CanonicalFixtureCandidate:
+    fixture_id: str
+    home_team_id: str
+    away_team_id: str
+    kickoff: datetime
+
+    def __post_init__(self) -> None:
+        for name in (
+            "fixture_id",
+            "home_team_id",
+            "away_team_id",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _non_empty(
+                    getattr(self, name),
+                    name,
+                ),
+            )
+
+        object.__setattr__(
+            self,
+            "kickoff",
+            _utc(
+                self.kickoff,
+                "kickoff",
+            ),
+        )
+
+        if (
+            self.home_team_id
+            == self.away_team_id
+        ):
+            raise TheOddsApiValidationError(
+                "canonical fixture teams must differ"
+            )
+
+
+@dataclass(frozen=True)
+class TheOddsApiEventIdentityMatch:
+    provider_event_id: str
+    canonical_fixture_id: str
+    canonical_home_team_id: str
+    canonical_away_team_id: str
+    provider_commence_time: datetime
+
+
+@dataclass(frozen=True)
+class TheOddsApiEventIdentityAudit:
+    matches: tuple[
+        TheOddsApiEventIdentityMatch,
+        ...
+    ]
+    unresolved_team_events: tuple[str, ...]
+    unresolved_team_names: tuple[str, ...]
+    unresolved_fixture_events: tuple[str, ...]
+    ambiguous_fixture_events: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MarketQuoteParseResult:
+    provider_event_id: str
+    canonical_fixture_id: str
+    quotes: tuple[MarketQuote, ...]
+    unresolved_players: tuple[str, ...]
+    skipped_unsupported_markets: int
+    snapshot_timestamp: datetime | None
+
+
+class TheOddsApiAdapter:
+    """Synchronous cached adapter for The Odds API V4 event odds."""
+
+    def __init__(
+        self,
+        *,
+        client: httpx.Client,
+        cache: HttpCache,
+        raw_store: RawStore,
+        api_key: str,
+        ttl: timedelta | None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 10.0,
+        clock: Callable[[], datetime] | None = None,
+    ):
+        if not callable(
+            getattr(client, "get", None)
+        ):
+            raise TheOddsApiValidationError(
+                "client must provide synchronous get()"
+            )
+
+        if not isinstance(
+            cache,
+            HttpCache,
+        ):
+            raise TheOddsApiValidationError(
+                "cache must be HttpCache"
+            )
+
+        if not isinstance(
+            raw_store,
+            RawStore,
+        ):
+            raise TheOddsApiValidationError(
+                "raw_store must be RawStore"
+            )
+
+        self._api_key = _non_empty(
+            api_key,
+            "api_key",
+        )
+
+        if (
+            ttl is not None
+            and (
+                not isinstance(
+                    ttl,
+                    timedelta,
+                )
+                or ttl < timedelta(0)
+            )
+        ):
+            raise TheOddsApiValidationError(
+                "ttl must be None or a non-negative timedelta"
+            )
+
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or timeout <= 0
+        ):
+            raise TheOddsApiValidationError(
+                "timeout must be finite and positive"
+            )
+
+        if (
+            clock is not None
+            and not callable(clock)
+        ):
+            raise TheOddsApiValidationError(
+                "clock must be callable"
+            )
+
+        base = _non_empty(
+            base_url,
+            "base_url",
+        ).rstrip("/")
+
+        self._client = client
+        self._cache = cache
+        self._raw = raw_store
+        self._ttl = ttl
+        self._base = base
+        self._timeout = float(timeout)
+        self._clock = (
+            clock
+            or (
+                lambda: datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+    def get_events(
+        self,
+        *,
+        sport: str = DEFAULT_SPORT,
+        commence_time_from: datetime | None = None,
+        commence_time_to: datetime | None = None,
+    ) -> TheOddsApiEventsResult:
+
+        sport = _non_empty(
+            sport,
+            "sport",
+        )
+
+        url = (
+            f"{self._base}/sports/"
+            f"{sport}/events"
+        )
+
+        params: dict[str, str] = {
+            "apiKey": self._api_key,
+            "dateFormat": "iso",
+        }
+
+        self._add_event_time_filters(
+            params,
+            commence_time_from,
+            commence_time_to,
+        )
+
+        return self._request_events(
+            url=url,
+            params=params,
+            sport=sport,
+            historical=False,
+            requested_snapshot_timestamp=None,
+        )
+
+    def get_historical_events(
+        self,
+        *,
+        prediction_timestamp: datetime,
+        sport: str = DEFAULT_SPORT,
+        commence_time_from: datetime | None = None,
+        commence_time_to: datetime | None = None,
+    ) -> TheOddsApiEventsResult:
+
+        sport = _non_empty(
+            sport,
+            "sport",
+        )
+
+        at = _utc(
+            prediction_timestamp,
+            "prediction_timestamp",
+        )
+
+        url = (
+            f"{self._base}/historical/sports/"
+            f"{sport}/events"
+        )
+
+        params: dict[str, str] = {
+            "apiKey": self._api_key,
+            "dateFormat": "iso",
+            "date": _iso_z(at),
+        }
+
+        self._add_event_time_filters(
+            params,
+            commence_time_from,
+            commence_time_to,
+        )
+
+        return self._request_events(
+            url=url,
+            params=params,
+            sport=sport,
+            historical=True,
+            requested_snapshot_timestamp=at,
+        )
+
+    @staticmethod
+    def _add_event_time_filters(
+        params: dict[str, str],
+        commence_time_from: datetime | None,
+        commence_time_to: datetime | None,
+    ) -> None:
+
+        start = (
+            None
+            if commence_time_from is None
+            else _utc(
+                commence_time_from,
+                "commence_time_from",
+            )
+        )
+
+        end = (
+            None
+            if commence_time_to is None
+            else _utc(
+                commence_time_to,
+                "commence_time_to",
+            )
+        )
+
+        if (
+            start is not None
+            and end is not None
+            and start > end
+        ):
+            raise TheOddsApiValidationError(
+                "commence_time_from cannot be "
+                "later than commence_time_to"
+            )
+
+        if start is not None:
+            params["commenceTimeFrom"] = (
+                _iso_z(start)
+            )
+
+        if end is not None:
+            params["commenceTimeTo"] = (
+                _iso_z(end)
+            )
+
+    def get_event_odds(
+        self,
+        *,
+        event_id: str,
+        sport: str = DEFAULT_SPORT,
+        regions: Sequence[str] = ("us",),
+        markets: Sequence[str] = SUPPORTED_MARKETS,
+    ) -> TheOddsApiResult:
+
+        event_id = _non_empty(
+            event_id,
+            "event_id",
+        )
+
+        sport = _non_empty(
+            sport,
+            "sport",
+        )
+
+        region_value = self._csv(
+            regions,
+            "regions",
+        )
+
+        market_value = self._csv(
+            markets,
+            "markets",
+        )
+
+        url = (
+            f"{self._base}/sports/"
+            f"{sport}/events/"
+            f"{event_id}/odds"
+        )
+
+        params = {
+            "apiKey": self._api_key,
+            "regions": region_value,
+            "markets": market_value,
+            "dateFormat": "iso",
+            "oddsFormat": "decimal",
+        }
+
+        return self._request(
+            url=url,
+            params=params,
+            event_id=event_id,
+            sport=sport,
+            historical=False,
+            requested_snapshot_timestamp=None,
+        )
+
+    def get_historical_event_odds(
+        self,
+        *,
+        event_id: str,
+        prediction_timestamp: datetime,
+        sport: str = DEFAULT_SPORT,
+        regions: Sequence[str] = ("us",),
+        markets: Sequence[str] = SUPPORTED_MARKETS,
+    ) -> TheOddsApiResult:
+
+        event_id = _non_empty(
+            event_id,
+            "event_id",
+        )
+
+        sport = _non_empty(
+            sport,
+            "sport",
+        )
+
+        at = _utc(
+            prediction_timestamp,
+            "prediction_timestamp",
+        )
+
+        region_value = self._csv(
+            regions,
+            "regions",
+        )
+
+        market_value = self._csv(
+            markets,
+            "markets",
+        )
+
+        url = (
+            f"{self._base}/historical/sports/"
+            f"{sport}/events/"
+            f"{event_id}/odds"
+        )
+
+        params = {
+            "apiKey": self._api_key,
+            "regions": region_value,
+            "markets": market_value,
+            "dateFormat": "iso",
+            "oddsFormat": "decimal",
+            "date": _iso_z(at),
+        }
+
+        return self._request(
+            url=url,
+            params=params,
+            event_id=event_id,
+            sport=sport,
+            historical=True,
+            requested_snapshot_timestamp=at,
+        )
+
+    @staticmethod
+    def _csv(
+        values: Sequence[str],
+        name: str,
+    ) -> str:
+
+        if (
+            not isinstance(values, Sequence)
+            or isinstance(
+                values,
+                (str, bytes),
+            )
+            or not values
+        ):
+            raise TheOddsApiValidationError(
+                f"{name} must be a non-empty sequence"
+            )
+
+        cleaned = [
+            _non_empty(
+                value,
+                name,
+            )
+            for value in values
+        ]
+
+        if len(set(cleaned)) != len(cleaned):
+            raise TheOddsApiValidationError(
+                f"{name} cannot contain duplicates"
+            )
+
+        return ",".join(cleaned)
+
+    def _request_events(
+        self,
+        *,
+        url: str,
+        params: Mapping[str, str],
+        sport: str,
+        historical: bool,
+        requested_snapshot_timestamp: datetime | None,
+    ) -> TheOddsApiEventsResult:
+
+        request = CacheRequest(
+            PROVIDER,
+            "GET",
+            url,
+            params=params,
+            sensitive_params=("apiKey",),
+        )
+
+        snapshot: RawSnapshot | None = None
+
+        entity = (
+            "historical_events"
+            if historical
+            else "events"
+        )
+
+        def fetch() -> HttpResponse:
+            nonlocal snapshot
+
+            try:
+                response = self._client.get(
+                    url,
+                    params=dict(params),
+                    timeout=self._timeout,
+                    follow_redirects=False,
+                )
+            except httpx.TimeoutException as exc:
+                raise TheOddsApiRequestError(
+                    "The Odds API events request timed out"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise TheOddsApiRequestError(
+                    "The Odds API events transport failed"
+                ) from exc
+
+            if response.status_code == 429:
+                raise TheOddsApiQuotaExceededError(
+                    "The Odds API quota/rate limit exceeded"
+                )
+
+            if not (
+                200
+                <= response.status_code
+                < 300
+            ):
+                raise TheOddsApiResponseError(
+                    "The Odds API events returned HTTP "
+                    f"{response.status_code}"
+                )
+
+            retrieved_at = _utc(
+                self._clock(),
+                "clock",
+            )
+
+            record_id = (
+                f"{sport}:events:"
+                + (
+                    _iso_z(
+                        requested_snapshot_timestamp
+                    )
+                    if historical
+                    and requested_snapshot_timestamp
+                    is not None
+                    else "current"
+                )
+            )
+
+            try:
+                snapshot = self._raw.store_bytes(
+                    response.content,
+                    source_provider=PROVIDER,
+                    entity=entity,
+                    retrieved_at=retrieved_at,
+                    source_url=request.redacted_url,
+                    source_record_id=record_id,
+                )
+            except RawStoreError as exc:
+                raise TheOddsApiStorageError(
+                    "failed to persist raw events response"
+                ) from exc
+
+            return HttpResponse(
+                status_code=response.status_code,
+                body=response.content,
+                headers=dict(
+                    response.headers
+                ),
+            )
+
+        try:
+            cached = self._cache.get_or_fetch(
+                request,
+                fetch,
+                ttl=(
+                    None
+                    if historical
+                    else self._ttl
+                ),
+            )
+        except TheOddsApiError:
+            raise
+        except HttpCacheError as exc:
+            raise TheOddsApiStorageError(
+                "The Odds API events cache failed"
+            ) from exc
+
+        payload = _json_value(
+            cached.body
+        )
+
+        if historical:
+            if not isinstance(
+                payload,
+                dict,
+            ):
+                raise TheOddsApiParseError(
+                    "historical events response "
+                    "must be an object"
+                )
+
+            snapshot_timestamp = _parse_datetime(
+                payload.get("timestamp"),
+                "historical events timestamp",
+            )
+
+            if (
+                requested_snapshot_timestamp
+                is None
+            ):
+                raise TheOddsApiValidationError(
+                    "historical events require "
+                    "prediction timestamp"
+                )
+
+            if (
+                snapshot_timestamp
+                > requested_snapshot_timestamp
+            ):
+                raise TheOddsApiLeakageError(
+                    "historical events snapshot "
+                    "is later than prediction timestamp"
+                )
+
+            raw_events = payload.get(
+                "data"
+            )
+
+            previous_raw = payload.get(
+                "previous_timestamp"
+            )
+
+            next_raw = payload.get(
+                "next_timestamp"
+            )
+
+            previous_timestamp = (
+                None
+                if previous_raw is None
+                else _parse_datetime(
+                    previous_raw,
+                    "previous_timestamp",
+                )
+            )
+
+            next_timestamp = (
+                None
+                if next_raw is None
+                else _parse_datetime(
+                    next_raw,
+                    "next_timestamp",
+                )
+            )
+
+        else:
+            raw_events = payload
+            snapshot_timestamp = None
+            previous_timestamp = None
+            next_timestamp = None
+
+        events = self._parse_events(
+            raw_events,
+            sport=sport,
+        )
+
+        retrieved_at = (
+            snapshot.retrieved_at
+            if snapshot is not None
+            else cached.stored_at
+        )
+
+        return TheOddsApiEventsResult(
+            sport=sport,
+            events=events,
+            response=cached,
+            retrieved_at=retrieved_at,
+            raw_snapshot=snapshot,
+            historical=historical,
+            requested_snapshot_timestamp=(
+                requested_snapshot_timestamp
+            ),
+            snapshot_timestamp=(
+                snapshot_timestamp
+            ),
+            previous_snapshot_timestamp=(
+                previous_timestamp
+            ),
+            next_snapshot_timestamp=(
+                next_timestamp
+            ),
+        )
+
+    @staticmethod
+    def _parse_events(
+        payload: object,
+        *,
+        sport: str,
+    ) -> tuple[TheOddsApiEvent, ...]:
+
+        if not isinstance(
+            payload,
+            list,
+        ):
+            raise TheOddsApiParseError(
+                "events data must be a list"
+            )
+
+        events: list[
+            TheOddsApiEvent
+        ] = []
+
+        seen: set[str] = set()
+
+        for row in payload:
+            if not isinstance(
+                row,
+                dict,
+            ):
+                raise TheOddsApiParseError(
+                    "event must be an object"
+                )
+
+            event_id = row.get(
+                "id"
+            )
+
+            if (
+                not isinstance(
+                    event_id,
+                    str,
+                )
+                or not event_id.strip()
+            ):
+                raise TheOddsApiParseError(
+                    "event id is required"
+                )
+
+            event_id = (
+                event_id.strip()
+            )
+
+            if event_id in seen:
+                raise TheOddsApiParseError(
+                    "duplicate provider event id"
+                )
+
+            seen.add(
+                event_id
+            )
+
+            payload_sport = row.get(
+                "sport_key"
+            )
+
+            if payload_sport != sport:
+                raise TheOddsApiParseError(
+                    "event sport_key mismatch"
+                )
+
+            home = row.get(
+                "home_team"
+            )
+
+            away = row.get(
+                "away_team"
+            )
+
+            if (
+                not isinstance(home, str)
+                or not home.strip()
+                or not isinstance(away, str)
+                or not away.strip()
+            ):
+                raise TheOddsApiParseError(
+                    "event home_team and away_team "
+                    "are required"
+                )
+
+            events.append(
+                TheOddsApiEvent(
+                    provider_event_id=event_id,
+                    sport=sport,
+                    commence_time=(
+                        _parse_datetime(
+                            row.get(
+                                "commence_time"
+                            ),
+                            "commence_time",
+                        )
+                    ),
+                    home_team=home.strip(),
+                    away_team=away.strip(),
+                )
+            )
+
+        return tuple(
+            sorted(
+                events,
+                key=lambda item: (
+                    item.commence_time,
+                    item.provider_event_id,
+                ),
+            )
+        )
+
+    def _request(
+        self,
+        *,
+        url: str,
+        params: Mapping[str, str],
+        event_id: str,
+        sport: str,
+        historical: bool,
+        requested_snapshot_timestamp: datetime | None,
+    ) -> TheOddsApiResult:
+
+        request = CacheRequest(
+            PROVIDER,
+            "GET",
+            url,
+            params=params,
+            sensitive_params=("apiKey",),
+        )
+
+        snapshot: RawSnapshot | None = None
+
+        entity = (
+            "historical_event_odds"
+            if historical
+            else "event_odds"
+        )
+
+        def fetch() -> HttpResponse:
+            nonlocal snapshot
+
+            try:
+                response = self._client.get(
+                    url,
+                    params=dict(params),
+                    timeout=self._timeout,
+                    follow_redirects=False,
+                )
+            except httpx.TimeoutException as exc:
+                raise TheOddsApiRequestError(
+                    "The Odds API request timed out"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise TheOddsApiRequestError(
+                    "The Odds API transport failed"
+                ) from exc
+
+            if response.status_code == 429:
+                raise TheOddsApiQuotaExceededError(
+                    "The Odds API quota/rate limit exceeded"
+                )
+
+            if not (
+                200
+                <= response.status_code
+                < 300
+            ):
+                raise TheOddsApiResponseError(
+                    "The Odds API returned HTTP "
+                    f"{response.status_code}"
+                )
+
+            retrieved_at = _utc(
+                self._clock(),
+                "clock",
+            )
+
+            record_id = (
+                f"{sport}:{event_id}:"
+                + (
+                    _iso_z(
+                        requested_snapshot_timestamp
+                    )
+                    if historical
+                    and requested_snapshot_timestamp
+                    is not None
+                    else "current"
+                )
+            )
+
+            try:
+                snapshot = self._raw.store_bytes(
+                    response.content,
+                    source_provider=PROVIDER,
+                    entity=entity,
+                    retrieved_at=retrieved_at,
+                    source_url=request.redacted_url,
+                    source_record_id=record_id,
+                )
+            except RawStoreError as exc:
+                raise TheOddsApiStorageError(
+                    "failed to persist raw odds response"
+                ) from exc
+
+            return HttpResponse(
+                status_code=response.status_code,
+                body=response.content,
+                headers=dict(
+                    response.headers
+                ),
+            )
+
+        try:
+            cached = self._cache.get_or_fetch(
+                request,
+                fetch,
+                ttl=(
+                    None
+                    if historical
+                    else self._ttl
+                ),
+            )
+        except TheOddsApiError:
+            raise
+        except HttpCacheError as exc:
+            raise TheOddsApiStorageError(
+                "The Odds API cache failed"
+            ) from exc
+
+        raw_payload = _json_object(
+            cached.body
+        )
+
+        if historical:
+            (
+                event_payload,
+                snapshot_timestamp,
+                previous_timestamp,
+                next_timestamp,
+            ) = self._parse_historical_wrapper(
+                raw_payload,
+                requested_snapshot_timestamp,
+            )
+        else:
+            event_payload = raw_payload
+            snapshot_timestamp = None
+            previous_timestamp = None
+            next_timestamp = None
+
+        payload_event_id = event_payload.get(
+            "id"
+        )
+
+        if (
+            not isinstance(
+                payload_event_id,
+                str,
+            )
+            or payload_event_id
+            != event_id
+        ):
+            raise TheOddsApiParseError(
+                "provider event id mismatch"
+            )
+
+        retrieved_at = (
+            snapshot.retrieved_at
+            if snapshot is not None
+            else cached.stored_at
+        )
+
+        return TheOddsApiResult(
+            provider_event_id=event_id,
+            sport=sport,
+            payload=event_payload,
+            response=cached,
+            retrieved_at=retrieved_at,
+            raw_snapshot=snapshot,
+            historical=historical,
+            requested_snapshot_timestamp=(
+                requested_snapshot_timestamp
+            ),
+            snapshot_timestamp=(
+                snapshot_timestamp
+            ),
+            previous_snapshot_timestamp=(
+                previous_timestamp
+            ),
+            next_snapshot_timestamp=(
+                next_timestamp
+            ),
+        )
+
+    @staticmethod
+    def _parse_historical_wrapper(
+        payload: Mapping[str, Any],
+        requested: datetime | None,
+    ) -> tuple[
+        Mapping[str, Any],
+        datetime,
+        datetime | None,
+        datetime | None,
+    ]:
+        if requested is None:
+            raise TheOddsApiValidationError(
+                "historical request requires timestamp"
+            )
+
+        snapshot_timestamp = _parse_datetime(
+            payload.get("timestamp"),
+            "historical timestamp",
+        )
+
+        if snapshot_timestamp > requested:
+            raise TheOddsApiLeakageError(
+                "historical snapshot is later "
+                "than requested prediction timestamp"
+            )
+
+        data = payload.get(
+            "data"
+        )
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise TheOddsApiParseError(
+                "historical event odds data "
+                "must be an object"
+            )
+
+        previous = payload.get(
+            "previous_timestamp"
+        )
+
+        next_value = payload.get(
+            "next_timestamp"
+        )
+
+        previous_timestamp = (
+            None
+            if previous is None
+            else _parse_datetime(
+                previous,
+                "previous_timestamp",
+            )
+        )
+
+        next_timestamp = (
+            None
+            if next_value is None
+            else _parse_datetime(
+                next_value,
+                "next_timestamp",
+            )
+        )
+
+        return (
+            data,
+            snapshot_timestamp,
+            previous_timestamp,
+            next_timestamp,
+        )
+
+
+def parse_market_quotes(
+    result: TheOddsApiResult,
+    *,
+    canonical_fixture_id: str,
+    player_resolver: Callable[
+        [str],
+        str | None,
+    ],
+) -> MarketQuoteParseResult:
+    """Parse supported provider player props into canonical MarketQuote rows."""
+
+    if not isinstance(
+        result,
+        TheOddsApiResult,
+    ):
+        raise TheOddsApiValidationError(
+            "result must be TheOddsApiResult"
+        )
+
+    fixture_id = _non_empty(
+        canonical_fixture_id,
+        "canonical_fixture_id",
+    )
+
+    if not callable(
+        player_resolver
+    ):
+        raise TheOddsApiValidationError(
+            "player_resolver must be callable"
+        )
+
+    bookmakers = result.payload.get(
+        "bookmakers",
+        [],
+    )
+
+    if not isinstance(
+        bookmakers,
+        list,
+    ):
+        raise TheOddsApiParseError(
+            "bookmakers must be a list"
+        )
+
+    quotes: list[
+        MarketQuote
+    ] = []
+
+    unresolved: set[str] = set()
+
+    unsupported = 0
+
+    for bookmaker in bookmakers:
+        if not isinstance(
+            bookmaker,
+            dict,
+        ):
+            raise TheOddsApiParseError(
+                "bookmaker must be an object"
+            )
+
+        bookmaker_key = bookmaker.get(
+            "key"
+        )
+
+        if (
+            not isinstance(
+                bookmaker_key,
+                str,
+            )
+            or not bookmaker_key.strip()
+        ):
+            raise TheOddsApiParseError(
+                "bookmaker key is required"
+            )
+
+        bookmaker_key = (
+            bookmaker_key.strip()
+        )
+
+        bookmaker_update_raw = (
+            bookmaker.get(
+                "last_update"
+            )
+        )
+
+        bookmaker_update = (
+            None
+            if bookmaker_update_raw is None
+            else _parse_datetime(
+                bookmaker_update_raw,
+                "bookmaker.last_update",
+            )
+        )
+
+        markets = bookmaker.get(
+            "markets",
+            [],
+        )
+
+        if not isinstance(
+            markets,
+            list,
+        ):
+            raise TheOddsApiParseError(
+                "bookmaker markets must be a list"
+            )
+
+        for market in markets:
+            if not isinstance(
+                market,
+                dict,
+            ):
+                raise TheOddsApiParseError(
+                    "market must be an object"
+                )
+
+            provider_market = market.get(
+                "key"
+            )
+
+            if (
+                not isinstance(
+                    provider_market,
+                    str,
+                )
+                or not provider_market.strip()
+            ):
+                raise TheOddsApiParseError(
+                    "market key is required"
+                )
+
+            provider_market = (
+                provider_market.strip()
+            )
+
+            market_kind = (
+                _MARKET_MAP.get(
+                    provider_market
+                )
+            )
+
+            if market_kind is None:
+                unsupported += 1
+                continue
+
+            market_update_raw = (
+                market.get(
+                    "last_update"
+                )
+            )
+
+            if market_update_raw is not None:
+                quoted_at = _parse_datetime(
+                    market_update_raw,
+                    "market.last_update",
+                )
+            elif bookmaker_update is not None:
+                quoted_at = (
+                    bookmaker_update
+                )
+            else:
+                raise TheOddsApiParseError(
+                    "supported market has no "
+                    "last_update timestamp"
+                )
+
+            if (
+                result.snapshot_timestamp
+                is not None
+                and quoted_at
+                > result.snapshot_timestamp
+            ):
+                raise TheOddsApiLeakageError(
+                    "market last_update is later "
+                    "than historical snapshot"
+                )
+
+            outcomes = market.get(
+                "outcomes",
+            )
+
+            if not isinstance(
+                outcomes,
+                list,
+            ):
+                raise TheOddsApiParseError(
+                    "market outcomes must be a list"
+                )
+
+            for outcome in outcomes:
+                if not isinstance(
+                    outcome,
+                    dict,
+                ):
+                    raise TheOddsApiParseError(
+                        "outcome must be an object"
+                    )
+
+                player_name = outcome.get(
+                    "description"
+                )
+
+                if (
+                    not isinstance(
+                        player_name,
+                        str,
+                    )
+                    or not player_name.strip()
+                ):
+                    raise TheOddsApiParseError(
+                        "player prop outcome requires description"
+                    )
+
+                player_name = (
+                    player_name.strip()
+                )
+
+                player_id = (
+                    player_resolver(
+                        player_name
+                    )
+                )
+
+                if player_id is None:
+                    unresolved.add(
+                        player_name
+                    )
+                    continue
+
+                if (
+                    not isinstance(
+                        player_id,
+                        str,
+                    )
+                    or not player_id.strip()
+                ):
+                    raise TheOddsApiParseError(
+                        "player_resolver must return "
+                        "canonical id or None"
+                    )
+
+                side_raw = outcome.get(
+                    "name"
+                )
+
+                if not isinstance(
+                    side_raw,
+                    str,
+                ):
+                    raise TheOddsApiParseError(
+                        "outcome side is required"
+                    )
+
+                side = _SIDE_MAP.get(
+                    side_raw.strip().lower()
+                )
+
+                if side is None:
+                    raise TheOddsApiParseError(
+                        f"unsupported outcome side: {side_raw!r}"
+                    )
+
+                price = outcome.get(
+                    "price"
+                )
+
+                if (
+                    type(price)
+                    not in (int, float)
+                    or not math.isfinite(price)
+                ):
+                    raise TheOddsApiParseError(
+                        "decimal outcome price must be finite"
+                    )
+
+                line_raw = outcome.get(
+                    "point"
+                )
+
+                line = (
+                    None
+                    if line_raw is None
+                    else float(line_raw)
+                )
+
+                source_record_id = (
+                    f"{result.provider_event_id}:"
+                    f"{bookmaker_key}:"
+                    f"{provider_market}:"
+                    f"{player_name}:"
+                    f"{side.value}:"
+                    f"{'' if line is None else line}"
+                )
+
+                try:
+                    quote = MarketQuote(
+                        provider=PROVIDER,
+                        bookmaker=bookmaker_key,
+                        fixture_id=fixture_id,
+                        player_id=player_id.strip(),
+                        market=market_kind,
+                        side=side,
+                        decimal_odds=float(price),
+                        quoted_at=quoted_at,
+                        line=line,
+                        source_record_id=source_record_id,
+                        raw_snapshot_id=(
+                            result.raw_snapshot.snapshot_id
+                            if result.raw_snapshot
+                            is not None
+                            else None
+                        ),
+                    )
+                except ValueError as exc:
+                    raise TheOddsApiParseError(
+                        "provider outcome violates "
+                        "MarketQuote contract"
+                    ) from exc
+
+                quotes.append(
+                    quote
+                )
+
+    return MarketQuoteParseResult(
+        provider_event_id=(
+            result.provider_event_id
+        ),
+        canonical_fixture_id=fixture_id,
+        quotes=tuple(
+            sorted(
+                quotes,
+                key=lambda q: (
+                    q.bookmaker,
+                    q.market.value,
+                    q.player_id,
+                    -1.0
+                    if q.line is None
+                    else q.line,
+                    q.side.value,
+                ),
+            )
+        ),
+        unresolved_players=tuple(
+            sorted(
+                unresolved
+            )
+        ),
+        skipped_unsupported_markets=(
+            unsupported
+        ),
+        snapshot_timestamp=(
+            result.snapshot_timestamp
+        ),
+    )
+
+
+
+def match_events_to_canonical_fixtures(
+    result: TheOddsApiEventsResult,
+    *,
+    team_resolver: Callable[
+        [str],
+        str | None,
+    ],
+    canonical_fixtures: Sequence[
+        CanonicalFixtureCandidate
+    ],
+    kickoff_tolerance: timedelta = timedelta(
+        hours=12
+    ),
+) -> TheOddsApiEventIdentityAudit:
+    """Map provider events without using names as canonical identities."""
+
+    if not isinstance(
+        result,
+        TheOddsApiEventsResult,
+    ):
+        raise TheOddsApiValidationError(
+            "result must be TheOddsApiEventsResult"
+        )
+
+    if not callable(
+        team_resolver
+    ):
+        raise TheOddsApiValidationError(
+            "team_resolver must be callable"
+        )
+
+    if (
+        not isinstance(
+            kickoff_tolerance,
+            timedelta,
+        )
+        or kickoff_tolerance
+        < timedelta(0)
+    ):
+        raise TheOddsApiValidationError(
+            "kickoff_tolerance must be "
+            "a non-negative timedelta"
+        )
+
+    fixtures = tuple(
+        canonical_fixtures
+    )
+
+    if not all(
+        isinstance(
+            item,
+            CanonicalFixtureCandidate,
+        )
+        for item in fixtures
+    ):
+        raise TheOddsApiValidationError(
+            "canonical_fixtures must contain "
+            "CanonicalFixtureCandidate records"
+        )
+
+    fixture_ids = [
+        item.fixture_id
+        for item in fixtures
+    ]
+
+    if (
+        len(set(fixture_ids))
+        != len(fixture_ids)
+    ):
+        raise TheOddsApiValidationError(
+            "canonical fixture ids must be unique"
+        )
+
+    matches: list[
+        TheOddsApiEventIdentityMatch
+    ] = []
+
+    unresolved_team_events: list[str] = []
+    unresolved_team_names: set[str] = set()
+    unresolved_fixture_events: list[str] = []
+    ambiguous_fixture_events: list[str] = []
+
+    for event in result.events:
+
+        home_team_id = team_resolver(
+            event.home_team
+        )
+
+        away_team_id = team_resolver(
+            event.away_team
+        )
+
+        if home_team_id is None:
+            unresolved_team_names.add(
+                event.home_team
+            )
+
+        if away_team_id is None:
+            unresolved_team_names.add(
+                event.away_team
+            )
+
+        if (
+            home_team_id is None
+            or away_team_id is None
+        ):
+            unresolved_team_events.append(
+                event.provider_event_id
+            )
+            continue
+
+        if (
+            not isinstance(
+                home_team_id,
+                str,
+            )
+            or not home_team_id.strip()
+            or not isinstance(
+                away_team_id,
+                str,
+            )
+            or not away_team_id.strip()
+        ):
+            raise TheOddsApiValidationError(
+                "team_resolver must return "
+                "canonical id or None"
+            )
+
+        home_team_id = (
+            home_team_id.strip()
+        )
+
+        away_team_id = (
+            away_team_id.strip()
+        )
+
+        candidates = [
+            fixture
+            for fixture in fixtures
+            if (
+                fixture.home_team_id
+                == home_team_id
+                and fixture.away_team_id
+                == away_team_id
+                and abs(
+                    fixture.kickoff
+                    - event.commence_time
+                )
+                <= kickoff_tolerance
+            )
+        ]
+
+        if not candidates:
+            unresolved_fixture_events.append(
+                event.provider_event_id
+            )
+            continue
+
+        if len(candidates) > 1:
+            ambiguous_fixture_events.append(
+                event.provider_event_id
+            )
+            continue
+
+        fixture = candidates[0]
+
+        matches.append(
+            TheOddsApiEventIdentityMatch(
+                provider_event_id=(
+                    event.provider_event_id
+                ),
+                canonical_fixture_id=(
+                    fixture.fixture_id
+                ),
+                canonical_home_team_id=(
+                    home_team_id
+                ),
+                canonical_away_team_id=(
+                    away_team_id
+                ),
+                provider_commence_time=(
+                    event.commence_time
+                ),
+            )
+        )
+
+    return TheOddsApiEventIdentityAudit(
+        matches=tuple(
+            sorted(
+                matches,
+                key=lambda item: (
+                    item.provider_event_id,
+                    item.canonical_fixture_id,
+                ),
+            )
+        ),
+        unresolved_team_events=tuple(
+            sorted(
+                unresolved_team_events
+            )
+        ),
+        unresolved_team_names=tuple(
+            sorted(
+                unresolved_team_names
+            )
+        ),
+        unresolved_fixture_events=tuple(
+            sorted(
+                unresolved_fixture_events
+            )
+        ),
+        ambiguous_fixture_events=tuple(
+            sorted(
+                ambiguous_fixture_events
+            )
+        ),
+    )

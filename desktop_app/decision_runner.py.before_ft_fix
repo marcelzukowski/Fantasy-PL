@@ -1,0 +1,238 @@
+"""Child-process entry point that adapts desktop state to the existing shadow runner."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import tempfile
+
+from fpl_engine.optimizer import OptimizerError, SquadState, optimize_lineup, validate_squad
+from fpl_engine.shadow import ShadowRunError, load_squad_state, run_shadow
+
+from .decision_orchestration import validate_decision_bundle
+from .transfer_plans import horizon_transfer_plans
+
+
+class DesktopDecisionError(ValueError):
+    pass
+
+
+def _object(path: Path, label: str) -> dict:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DesktopDecisionError(f"Cannot read {label}.") from exc
+    if not isinstance(value, dict):
+        raise DesktopDecisionError(f"{label} must contain an object.")
+    return value
+
+
+def _chip_state(used: object) -> dict:
+    if not isinstance(used, dict):
+        used = {}
+    return {
+        "wildcard_h1": not bool(used.get("wildcard_h1")),
+        "wildcard_h2": not bool(used.get("wildcard_h2")),
+        "free_hit_h1": not bool(used.get("free_hit_h1")),
+        "free_hit_h2": not bool(used.get("free_hit_h2")),
+        "bench_boost_h1": not bool(used.get("bench_boost_h1")),
+        "bench_boost_h2": not bool(used.get("bench_boost_h2")),
+        "triple_captain_h1": not bool(used.get("triple_captain_h1")),
+        "triple_captain_h2": not bool(used.get("triple_captain_h2")),
+        "last_free_hit_gameweek": None,
+    }
+
+
+def shadow_input(desktop: dict, bundle: dict) -> dict:
+    player_ids = desktop.get("player_ids")
+    if not isinstance(player_ids, list) or len(player_ids) != 15 or len(set(player_ids)) != 15:
+        raise DesktopDecisionError("Decision engine requires an explicit 15-player squad.")
+    if str(desktop.get("season")) != str(bundle.get("season")) or int(desktop.get("gameweek", -1)) != int(bundle.get("current_gameweek", -2)):
+        raise DesktopDecisionError("Saved projections do not match the selected season and gameweek.")
+    purchase = desktop.get("purchase_prices_tenths")
+    selling = desktop.get("selling_prices_tenths")
+    if not isinstance(purchase, dict) or not isinstance(selling, dict):
+        raise DesktopDecisionError("Personal purchase and selling prices are required before a decision can run.")
+    missing_purchase = [player_id for player_id in player_ids if player_id not in purchase]
+    missing_selling = [player_id for player_id in player_ids if player_id not in selling]
+    if missing_purchase or missing_selling:
+        details = []
+        if missing_purchase:
+            details.append("purchase prices: " + ", ".join(sorted(missing_purchase)))
+        if missing_selling:
+            details.append("selling prices: " + ", ".join(sorted(missing_selling)))
+        raise DesktopDecisionError("Account prices are incomplete (" + "; ".join(details) + ").")
+    pool = {str(item.get("player_id")): item for item in bundle.get("candidate_pool", []) if isinstance(item, dict)}
+    players = []
+    for player_id in player_ids:
+        row = pool.get(str(player_id))
+        if row is None:
+            raise DesktopDecisionError(f"Player {player_id} is unavailable in the saved projection universe.")
+        players.append({
+            "player_id": str(player_id), "position": row.get("position"), "club_id": row.get("club_id"),
+            "purchase_price": int(purchase[player_id]), "current_price": int(row.get("current_price")),
+            "selling_price": int(selling[player_id]),
+        })
+    return {
+        "prediction_timestamp": bundle.get("prediction_timestamp"), "season": bundle.get("season"),
+        "current_gameweek": bundle.get("current_gameweek"), "players": players,
+        "bank": int(desktop.get("bank_tenths")), "free_transfers": int(desktop.get("free_transfers")),
+        "chip_state": _chip_state(desktop.get("chips_used")),
+    }
+
+
+def _display_metadata(bundle_path: Path, bundle: dict) -> dict[str, dict]:
+    names: dict[str, str] = {}
+    current_players = bundle_path.parent / "current_players.json"
+    try:
+        rows = json.loads(current_players.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        rows = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("player_id"):
+            provider = row.get("provider_payload") if isinstance(row.get("provider_payload"), dict) else {}
+            names[str(row["player_id"])] = str(row.get("display_name") or row.get("name") or provider.get("web_name") or row["player_id"])
+    result = {}
+    for row in bundle.get("candidate_pool", []):
+        if not isinstance(row, dict) or not row.get("player_id"):
+            continue
+        player_id = str(row["player_id"])
+        result[player_id] = {
+            "name": names.get(player_id, player_id), "position": row.get("position"),
+            "current_price": row.get("current_price"),
+        }
+    return result
+
+
+def _strategy_key(title: str) -> str:
+    return {
+        "Best short-term": "short_term",
+        "Best balanced": "balanced",
+        "Best long-term": "long_term",
+    }.get(title, "")
+
+
+def _strategy_preview_payload(*, plan, state, pool, projections, rules) -> dict:
+    """Apply one existing transfer plan, then use the existing lineup optimizer."""
+    outgoing = tuple(plan.transfers_out)
+    incoming = tuple(plan.transfers_in)
+    owned = {player.player_id: player for player in state.players}
+    pool_by_id = {player.player_id: player for player in pool}
+    if any(player_id not in owned for player_id in outgoing):
+        raise DesktopDecisionError("A selected strategy removes a player outside the current squad.")
+    if any(player_id not in pool_by_id for player_id in incoming):
+        raise DesktopDecisionError("A selected strategy includes a player outside the production pool.")
+    working = dict(owned)
+    for player_id in outgoing:
+        del working[player_id]
+    for player_id in incoming:
+        working[player_id] = pool_by_id[player_id]
+    if plan.resulting_bank is None or plan.free_transfers_after is None:
+        raise DesktopDecisionError("A selected strategy lacks its validated budget or free-transfer result.")
+    preview_state = SquadState(
+        players=tuple(working.values()),
+        bank=plan.resulting_bank,
+        free_transfers=plan.free_transfers_after,
+        chips=state.chips,
+        current_gameweek=state.current_gameweek,
+        season=state.season,
+        rule_version=state.rule_version,
+        prediction_timestamp=state.prediction_timestamp,
+    )
+    try:
+        validate_squad(preview_state, rules)
+        lineup = optimize_lineup(preview_state, projections, rules)
+    except OptimizerError as exc:
+        raise DesktopDecisionError("A selected strategy cannot produce a valid current-GW lineup.") from exc
+    return {
+        "transfers_out": list(outgoing), "transfers_in": list(incoming),
+        "resulting_bank": plan.resulting_bank,
+        "free_transfers_after": plan.free_transfers_after,
+        "starting_xi": list(lineup.starting_xi), "bench_order": list(lineup.bench_order),
+        "captain": lineup.captain_id, "vice_captain": lineup.vice_captain_id,
+    }
+
+
+def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Path, output_dir: Path, project_root: Path) -> Path:
+    desktop = _object(desktop_state_path, "desktop squad state")
+    bundle = validate_decision_bundle(
+        project_root,
+        prediction_bundle_path,
+        season=str(desktop.get("season")),
+        gameweek=int(desktop.get("gameweek", -1)),
+        require_canonical_path=False,
+    )
+    payload = shadow_input(desktop, bundle)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="fpl-desktop-decision-") as temporary:
+        source = Path(temporary) / "shadow-input.json"
+        source.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            machine, _ = run_shadow(source, project_root=project_root, output_dir=output_dir, prediction_bundle_path=prediction_bundle_path)
+        except ShadowRunError as exc:
+            raise DesktopDecisionError(str(exc)) from exc
+        try:
+            strategy_state, pool, projections, _pipeline, _warnings, rules, _freshness = load_squad_state(
+                source, project_root=project_root, prediction_bundle_path=prediction_bundle_path,
+            )
+        except ShadowRunError as exc:
+            raise DesktopDecisionError("Decision output cannot build current-GW strategy previews.") from exc
+    report = _object(machine, "shadow decision report")
+    recommendation = report.get("recommendations", {}).get("greedy_1gw")
+    if not isinstance(recommendation, dict):
+        raise DesktopDecisionError("The decision engine did not return its Greedy 1GW recommendation.")
+    optimizer_v1 = report.get("recommendations", {}).get("optimizer_v1", {})
+    feasible_plans = optimizer_v1.get("alternatives", []) if isinstance(optimizer_v1, dict) else []
+    if not isinstance(feasible_plans, list):
+        feasible_plans = []
+    horizon_report = {"recommendation": recommendation, "feasible_plans": feasible_plans}
+    strategy_previews: dict[str, dict] = {}
+    strategy_unavailable: dict[str, str] = {}
+    for display_plan in horizon_transfer_plans(horizon_report):
+        key = _strategy_key(display_plan.title)
+        if not key:
+            continue
+        try:
+            strategy_previews[key] = _strategy_preview_payload(
+                plan=display_plan.plan, state=strategy_state, pool=pool,
+                projections=projections, rules=rules,
+            )
+        except DesktopDecisionError as exc:
+            strategy_unavailable[key] = str(exc)
+    result = {
+        "report_version": 2, "mode": report.get("mode"), "external_mutations": report.get("external_mutations", []),
+        "shadow_report": str(machine), "recommendation": recommendation,
+        # These are the existing Optimizer V1 candidate plans, already checked
+        # against the account state and FPL constraints by the engine.
+        "feasible_plans": feasible_plans,
+        "strategy_previews": strategy_previews,
+        "strategy_unavailable": strategy_unavailable,
+        "player_metadata": _display_metadata(prediction_bundle_path, bundle),
+    }
+    destination = output_dir / f"desktop-decision-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+    destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return destination
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--desktop-state", type=Path, required=True)
+    parser.add_argument("--prediction-bundle", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        report = run_desktop_decision(
+            desktop_state_path=args.desktop_state, prediction_bundle_path=args.prediction_bundle,
+            output_dir=args.output_dir, project_root=Path(__file__).resolve().parents[1],
+        )
+    except DesktopDecisionError as exc:
+        parser.error(str(exc))
+    print(f"DECISION_REPORT={report}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

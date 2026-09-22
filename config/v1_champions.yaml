@@ -1,0 +1,32 @@
+manifest_version: 1
+season: "2026/27"
+status: KEEP_TESTING
+evidence_mode: STRICT
+leakage_violations: 0
+
+# Active V1 runtime implementations. KEEP_TESTING records that this checkout
+# contains no complete historical experiment artifacts from which to claim an
+# out-of-sample promotion over the permanent baselines.
+active:
+  team_strength: "dixon_coles_v1_hl60_xg"
+  minutes: "minutes_hurdle_v1"
+  player_talent: "player_talent_empirical_bayes_v1"
+  event_models:
+    goals: "event_models_v1"
+    assists: "event_models_v1"
+    clean_sheets: "event_models_v1"
+    saves: "event_models_v1"
+    defensive_contributions: "event_models_v1"
+    bonus: "event_models_v1"
+  simulation: "fixture_simulator_v1"
+  scoring_rules_version: 1
+  projection: "projection_builder_v1"
+  optimizer: "optimizer_v1"
+  optimizer_rules_version: 1
+  metric_registry: "metrics_v1"
+
+required_evidence:
+  - "strict chronological out-of-sample report"
+  - "zero leakage violations"
+  - "configured practical improvement threshold"
+  - "confidence interval for the primary metric delta"

@@ -1,0 +1,187 @@
+version: 202526
+competition: Fantasy Premier League
+season: "2025/26"
+description: Historical Fantasy Premier League scoring and BPS rules for 2025/26.
+
+metadata:
+  rules_verified_for_season: "2025/26"
+  verified_at: "2026-09-11"
+  primary_authority: "Premier League / Fantasy Premier League 2025/26 rule-change announcements"
+  source_urls:
+    - "https://www.premierleague.com/en/news/4362211"
+    - "https://www.premierleague.com/en/news/4362127"
+    - "https://www.premierleague.com/en/news/4361991"
+  historical_only: true
+  defensive_contribution_points: true
+
+positions:
+  goalkeeper: {code: GK}
+  defender: {code: DEF}
+  midfielder: {code: MID}
+  forward: {code: FWD}
+
+appearance:
+  did_not_play: {min_minutes: 0, max_minutes: 0, points: 0}
+  played_under_60: {min_minutes: 1, max_minutes: 59, points: 1}
+  played_60_or_more: {min_minutes: 60, points: 2}
+  rules: {stoppage_time_counts_toward_60_threshold: false}
+
+goals:
+  goalkeeper: {points_per_goal: 10}
+  defender: {points_per_goal: 6}
+  midfielder: {points_per_goal: 5}
+  forward: {points_per_goal: 4}
+
+assists:
+  points_per_assist: 3
+
+clean_sheets:
+  minimum_minutes: 60
+  stoppage_time_counts_toward_minimum: false
+  points:
+    goalkeeper: 4
+    defender: 4
+    midfielder: 1
+    forward: 0
+  eligibility:
+    must_play_minimum_minutes: true
+    must_concede_zero_while_on_pitch: true
+
+goals_conceded:
+  applicable_positions: [goalkeeper, defender]
+  goals_per_deduction: 2
+  points_per_deduction: -1
+
+goalkeeper_saves:
+  saves_per_point: 3
+  points_per_group: 1
+
+penalty_saves:
+  goalkeeper_only: true
+  points_per_penalty_save: 5
+
+penalty_misses:
+  points_per_miss: -2
+
+cards:
+  yellow: {points: -1}
+  red: {points: -3}
+
+own_goals:
+  points_per_own_goal: -2
+
+defensive_contributions:
+  enabled: true
+  maximum_points_per_player_per_fixture: 2
+
+  goalkeeper:
+    eligible: false
+    threshold: 999999
+    points: 0
+
+  defender:
+    eligible: true
+    threshold: 10
+    points: 2
+
+  midfielder:
+    eligible: true
+    threshold: 12
+    points: 2
+
+  forward:
+    eligible: true
+    threshold: 12
+    points: 2
+
+bonus_points:
+  enabled: true
+  allocation:
+    standard:
+      first: 3
+      second: 2
+      third: 1
+  rules:
+    - "Ties for first, second and third use the standard FPL shared-rank allocation."
+
+bps:
+  appearance:
+    minutes_1_to_60: {bps: 3}
+    over_60_minutes: {bps: 6}
+
+  goals:
+    penalty_goal:
+      bps: 12
+    non_penalty_goal:
+      goalkeeper: {bps: 12}
+      defender: {bps: 12}
+      midfielder: {bps: 18}
+      forward: {bps: 24}
+
+  assists:
+    bps_per_assist: 9
+
+  clean_sheet:
+    goalkeeper: {bps: 12}
+    defender: {bps: 12}
+    midfielder: {bps: 0}
+    forward: {bps: 0}
+
+  goalkeeper:
+    # 2025/26:
+    # outside-box save = 2
+    # inside-box save = 3
+    # penalty-save action adds 8, giving 11 with an inside-box save.
+    save:
+      bps_per_action: 2
+    save_from_inside_box:
+      additional_bps_per_action: 1
+    save_from_big_chance:
+      additional_bps_per_action: 0
+    penalty_save:
+      additional_bps_per_action: 8
+
+  attacking_actions:
+    successful_open_play_cross: {bps_per_action: 1}
+    chance_created: {bps_per_action: 1}
+    big_chance_created: {bps_per_action: 3}
+    successful_dribble: {bps_per_action: 1}
+    shot_on_target: {bps_per_action: 2}
+    winning_goal: {bps_per_action: 3}
+    foul_won: {bps_per_action: 1}
+
+  defensive_actions:
+    # 2026/27 changed this from 2 to 3.
+    clearances_blocks_interceptions:
+      group_size: 2
+      bps_per_complete_group: 1
+
+    recoveries:
+      group_size: 3
+      bps_per_complete_group: 1
+
+    successful_tackle:
+      bps_per_action: 2
+
+    goal_line_clearance:
+      bps_per_action: 9
+
+  passing:
+    minimum_passes_attempted_for_completion_bonus: 30
+    completion_70_to_79_percent: {bps: 2}
+    completion_80_to_89_percent: {bps: 4}
+    completion_90_plus_percent: {bps: 6}
+
+  negative_actions:
+    goalkeeper_or_defender_concedes_goal: {bps_per_goal: -4}
+    penalty_conceded: {bps_per_action: -3}
+    penalty_missed: {bps_per_action: -6}
+    yellow_card: {bps_per_action: -3}
+    red_card: {bps_per_action: -9}
+    own_goal: {bps_per_action: -6}
+    big_chance_missed: {bps_per_action: -3}
+    error_leading_to_goal: {bps_per_action: -3}
+    error_leading_to_attempt: {bps_per_action: -1}
+    foul_conceded: {bps_per_action: -1}
+    offside: {bps_per_action: -1}
+    shot_off_target: {bps_per_action: -1}

@@ -1,0 +1,958 @@
+version: 2
+
+description: >
+  Data-source configuration for the FPL Prediction & Decision Engine.
+  The project follows a FREE-FIRST strategy. No paid provider is required
+  for the initial or target architecture. Provider-specific data must be
+  normalized into canonical schemas before any model consumes it.
+
+strategy:
+  mode: free_first
+  paid_provider_required: false
+  provider_agnostic_models: true
+  raw_data_immutable: true
+  cache_all_downloads: true
+  persist_retrieval_timestamp: true
+  persist_source_provenance: true
+  point_in_time_backtesting_required: true
+
+  principles:
+    - "Models consume canonical fields, never provider-specific response structures."
+    - "Provider adapters may be replaced without changing model code."
+    - "Use multiple free sources when no single source provides complete coverage."
+    - "Missing advanced data must remain explicit; never fabricate values."
+    - "Fallback usage must be recorded in provenance metadata."
+    - "Historical features must obey what-was-known-at-prediction-time."
+    - "Prefer reproducible bulk downloads over repeated API calls when possible."
+
+# =============================================================================
+# CANONICAL SOURCE ROLES
+# =============================================================================
+
+canonical_roles:
+
+  current_fpl_state:
+    preferred:
+      - official_fpl_api
+    fallback:
+      - fplcache
+      - vaastav_fpl
+
+  historical_fpl:
+    preferred:
+      - vaastav_fpl
+    fallback:
+      - fplcache
+
+  point_in_time_fpl:
+    preferred:
+      - fplcache
+    fallback:
+      - locally_archived_fpl_snapshots
+
+  fixtures:
+    preferred:
+      - official_fpl_api
+    fallback:
+      - api_football_free
+      - football_data
+
+  lineups:
+    preferred:
+      - api_football_free
+    fallback:
+      - statsbomb_open_data
+      - manual_context
+
+  formations:
+    preferred:
+      - api_football_free
+    fallback:
+      - statsbomb_open_data
+      - manual_context
+
+  detailed_positions:
+    preferred:
+      - api_football_free
+    fallback:
+      - statsbomb_open_data
+      - manual_context
+
+  injuries:
+    preferred:
+      - official_fpl_api
+      - api_football_free
+    fallback:
+      - fplcache
+      - manual_context
+
+  suspensions:
+    preferred:
+      - api_football_free
+    fallback:
+      - official_fpl_api
+      - manual_context
+
+  transfers:
+    preferred:
+      - api_football_free
+    fallback:
+      - manual_context
+
+  managers:
+    preferred:
+      - api_football_free
+    fallback:
+      - manual_context
+
+  bookmaker_market:
+    preferred:
+      - football_data
+    fallback:
+      - api_football_free
+
+  advanced_event_data:
+    preferred:
+      - statsbomb_open_data
+    fallback:
+      - api_football_free
+      - official_fpl_api
+
+  player_xg_premier_league:
+    preferred:
+      - official_fpl_api
+    fallback:
+      - statsbomb_open_data
+
+  player_xa_premier_league:
+    preferred:
+      - official_fpl_api
+    fallback:
+      - statsbomb_open_data
+
+  cross_league_history:
+    preferred:
+      - api_football_free
+      - statsbomb_open_data
+    fallback:
+      - manual_context
+
+# =============================================================================
+# SOURCES
+# =============================================================================
+
+sources:
+
+  # ---------------------------------------------------------------------------
+  # 1. OFFICIAL FPL API
+  # ---------------------------------------------------------------------------
+
+  official_fpl_api:
+    type: http_api
+    cost: free
+    required: true
+    priority: primary
+    adapter_name: fpl_api
+
+    purpose:
+      - current_players
+      - teams
+      - player_prices
+      - fpl_positions
+      - fixtures
+      - gameweek_deadlines
+      - player_status
+      - chance_of_playing
+      - player_news
+      - fpl_points
+      - minutes
+      - starts
+      - goals
+      - assists
+      - expected_goals
+      - expected_assists
+      - expected_goal_involvements
+      - expected_goals_conceded
+      - bonus
+      - bps
+      - saves
+      - goals_conceded
+      - defensive_contributions
+      - ownership
+      - transfers_in
+      - transfers_out
+      - set_piece_order
+      - live_gameweek_results
+
+    useful_endpoints:
+      bootstrap_static:
+        path: "/api/bootstrap-static/"
+        cache: true
+
+      fixtures:
+        path: "/api/fixtures/"
+        cache: true
+
+      player_summary:
+        path_template: "/api/element-summary/{player_id}/"
+        cache: true
+
+      gameweek_live:
+        path_template: "/api/event/{gameweek}/live/"
+        cache: true
+
+    update_policy:
+      regular_current_state: "configurable"
+      mandatory_snapshot: "before_each_fpl_deadline"
+      post_gameweek_snapshot: true
+
+    historical_backtest_usage:
+      allowed: true
+      condition: >
+        Historical values may only be used when their availability at the
+        historical prediction timestamp can be demonstrated.
+
+    strengths:
+      - "Best source of current FPL-specific state."
+      - "Contains FPL prices, positions, status and scoring information."
+      - "Contains official FPL expected-stat fields for current Premier League players."
+
+    limitations:
+      - "Not a general cross-league football database."
+      - "Historical point-in-time state requires archived snapshots."
+      - "Does not replace detailed tactical/event data."
+
+    ingestion_rules:
+      - "Persist complete raw responses before normalization."
+      - "Attach retrieved_at UTC timestamp."
+      - "Do not overwrite previous snapshots."
+      - "Rate-limit politely and cache responses."
+
+  # ---------------------------------------------------------------------------
+  # 2. VAASTAV HISTORICAL FPL
+  # ---------------------------------------------------------------------------
+
+  vaastav_fpl:
+    type: github_dataset
+    cost: free
+    required: true
+    priority: primary_historical
+    adapter_name: vaastav
+
+    repository: "vaastav/Fantasy-Premier-League"
+
+    purpose:
+      - historical_seasons
+      - historical_gameweeks
+      - historical_player_gameweek_stats
+      - historical_prices
+      - historical_minutes
+      - historical_starts
+      - historical_fpl_points
+      - historical_expected_goals
+      - historical_expected_assists
+      - historical_bps
+      - historical_bonus
+      - historical_defensive_contributions
+
+    update_policy:
+      historical: "on_dataset_update"
+      current_season: "periodic"
+
+    historical_backtest_usage:
+      allowed: true
+      point_in_time_review_required: true
+
+    forbidden_or_high_risk_fields:
+      xP:
+        default_action: exclude
+        reason: >
+          May not represent a value that was available before the historical
+          FPL deadline and therefore may introduce look-ahead leakage.
+
+    strengths:
+      - "Convenient multi-season FPL history."
+      - "Gameweek-level datasets."
+      - "Useful bridge to same-season official FPL identities."
+
+    limitations:
+      - "Not every field is necessarily point-in-time safe."
+      - "Coverage depends on season and upstream FPL fields."
+
+    ingestion_rules:
+      - "Store source commit/hash with every imported dataset version."
+      - "Never treat repository updates as historical prediction snapshots."
+      - "Run leakage review before promoting fields to features."
+
+  # ---------------------------------------------------------------------------
+  # 3. FPLCACHE
+  # ---------------------------------------------------------------------------
+
+  fplcache:
+    type: historical_snapshot_archive
+    cost: free
+    required: true
+    priority: critical
+    adapter_name: fplcache
+
+    repository: "Randdalf/fplcache"
+
+    purpose:
+      - historical_bootstrap_snapshots
+      - pre_deadline_player_status
+      - pre_deadline_player_news
+      - pre_deadline_prices
+      - pre_deadline_availability
+      - pre_deadline_ownership
+      - pre_deadline_transfer_activity
+
+    historical_backtest_usage:
+      allowed: true
+      preferred_snapshot_selection: "latest_snapshot_strictly_before_prediction_timestamp"
+
+    strengths:
+      - "Critical for point-in-time reconstruction."
+      - "Reduces injury/news/price leakage in historical backtests."
+
+    limitations:
+      - "Snapshot frequency is finite."
+      - "Not all seasons or every instant may be available."
+
+    ingestion_rules:
+      - "Never choose the nearest snapshot if it occurs after prediction_timestamp."
+      - "Persist original snapshot timestamp."
+      - "Prefer null/missing over using future information."
+
+  # ---------------------------------------------------------------------------
+  # 4. API-FOOTBALL FREE
+  # ---------------------------------------------------------------------------
+
+  api_football_free:
+    type: http_api
+    cost: free
+    required: true
+    priority: primary_free_advanced
+    adapter_name: api_football
+
+    plan:
+      name: free
+      requests_per_day: 100
+      requests_per_minute: 10
+      season_history_limitation: true
+
+    purpose:
+      - leagues
+      - seasons
+      - teams
+      - fixtures
+      - events
+      - lineups
+      - formations
+      - player_match_statistics
+      - players
+      - coaches
+      - transfers
+      - injuries
+      - sidelined
+      - pre_match_odds_when_available
+      - competition_schedules
+      - cross_league_identity_support
+      - cross_league_player_history_when_covered
+
+    quota_strategy:
+      mandatory: true
+
+      rules:
+        - "Never request one endpoint per player when a fixture/team/league bulk endpoint can be used."
+        - "Cache every successful response."
+        - "Do not refetch immutable historical responses."
+        - "Use conditional refresh schedules."
+        - "Budget requests per day before ingestion starts."
+        - "Fail gracefully when the daily quota is exhausted."
+
+      priority_order:
+        - lineups_and_formations
+        - injuries_and_sidelined
+        - fixtures_and_competition_schedule
+        - transfers
+        - coaches
+        - player_statistics
+        - odds
+
+    historical_backtest_usage:
+      allowed: conditional
+      conditions:
+        - "Requested historical season must be available on the free tier."
+        - "The record must satisfy point-in-time rules when used as a historical feature."
+
+    strengths:
+      - "Free access to all endpoint categories."
+      - "Useful for lineups, formations, injuries, transfers and coaches."
+      - "Broad competition coverage."
+      - "Useful cross-league identity/context source."
+
+    limitations:
+      - "Free tier is limited to 100 requests/day."
+      - "Free tier limits available historical seasons."
+      - "Do not assume advanced xG/npxG fields are available."
+      - "Coverage varies by league/season/endpoint."
+
+    ingestion_rules:
+      - "Inspect provider coverage flags before scheduling calls."
+      - "Persist quota counters and response metadata."
+      - "Do not build model features that require provider fields not guaranteed by coverage."
+      - "Normalize all provider positions/formations to canonical taxonomies."
+
+  # ---------------------------------------------------------------------------
+  # 5. STATSBOMB OPEN DATA
+  # ---------------------------------------------------------------------------
+
+  statsbomb_open_data:
+    type: github_open_dataset
+    cost: free
+    required: true
+    priority: supplementary_advanced
+    adapter_name: statsbomb_open
+
+    repository: "statsbomb/open-data"
+
+    purpose:
+      - event_data
+      - lineups
+      - shot_events
+      - pass_events
+      - carries
+      - pressures
+      - defensive_events
+      - tactical_research
+      - feature_engineering_research
+      - model_pretraining_or_validation_when_competition_is_covered
+      - cross_league_history_when_competition_is_covered
+
+    datasets:
+      - competitions
+      - matches
+      - events
+      - lineups
+      - three_sixty_selected_matches
+
+    historical_backtest_usage:
+      allowed: true
+      coverage_dependent: true
+
+    strengths:
+      - "High-quality event-level football data."
+      - "Excellent for developing and validating football feature engineering."
+      - "No API request quota for repository files."
+
+    limitations:
+      - "Only selected competitions and seasons are openly available."
+      - "Cannot be assumed to cover current Premier League season."
+      - "Cannot be the only advanced-data source."
+
+    attribution:
+      required: true
+      note: "Respect StatsBomb Open Data attribution requirements."
+
+    ingestion_rules:
+      - "Record competition and season coverage explicitly."
+      - "Do not treat unavailable competition data as zero."
+      - "Map StatsBomb IDs through the canonical identity layer."
+
+  # ---------------------------------------------------------------------------
+  # 6. FOOTBALL-DATA.CO.UK
+  # ---------------------------------------------------------------------------
+
+  football_data:
+    type: csv_dataset
+    cost: free
+    required: true
+    priority: secondary
+    adapter_name: football_data
+
+    purpose:
+      - historical_results
+      - match_results
+      - shots
+      - shots_on_target
+      - corners
+      - cards
+      - opening_bookmaker_odds
+      - historical_market_baseline
+      - current_fixture_odds_files
+
+    historical_backtest_usage:
+      allowed: true
+
+    bookmaker_policy:
+      preferred:
+        - opening_odds
+        - pre_deadline_odds
+
+      conditionally_allowed:
+        - "Any price with a documented timestamp <= prediction_timestamp."
+
+      forbidden:
+        - closing_odds_after_prediction_timestamp
+        - closing_odds_after_fpl_deadline_for_predeadline_backtest
+
+    strengths:
+      - "Free bulk CSV downloads."
+      - "Long historical results/odds coverage."
+      - "Useful bookmaker baseline without paid API."
+
+    limitations:
+      - "Primarily match-level rather than player-level data."
+      - "Column availability varies across seasons/leagues."
+
+    ingestion_rules:
+      - "Persist downloaded original file."
+      - "Persist source update timestamp when available."
+      - "Version schemas because historical columns may differ."
+
+  # ---------------------------------------------------------------------------
+  # 7. LOCAL FPL SNAPSHOTS
+  # ---------------------------------------------------------------------------
+
+  locally_archived_fpl_snapshots:
+    type: local_snapshot_store
+    cost: free
+    required: true
+    priority: critical_future_history
+    adapter_name: local_fpl_archive
+
+    purpose:
+      - future_point_in_time_backtesting
+      - current_season_predeadline_state
+      - independent_fallback_to_fplcache
+
+    snapshot_schedule:
+      minimum:
+        - "before_each_fpl_deadline"
+      recommended:
+        - "daily"
+        - "extra snapshot when major injury/team news changes"
+
+    stored_payloads:
+      - bootstrap_static
+      - fixtures
+      - relevant_player_summaries
+      - gameweek_metadata
+
+    ingestion_rules:
+      - "Snapshots are append-only."
+      - "Use UTC timestamps."
+      - "Never overwrite prior snapshots."
+      - "Persist checksum of raw payload."
+
+  # ---------------------------------------------------------------------------
+  # 8. MANUAL CONTEXT
+  # ---------------------------------------------------------------------------
+
+  manual_context:
+    type: versioned_local_yaml
+    cost: free
+    required: true
+    priority: critical_context
+    adapter_name: manual_context
+
+    purpose:
+      - player_role_override
+      - tactical_position_override
+      - penalty_taker_override
+      - corner_taker_override
+      - free_kick_taker_override
+      - manager_change_correction
+      - formation_change
+      - regime_change
+      - player_competition_for_minutes
+      - injury_context_correction
+      - transfer_context_correction
+      - unusual_context
+
+    required_metadata:
+      - effective_from
+      - effective_to
+      - confidence
+      - reason
+      - author
+      - created_at
+
+    optional_metadata:
+      - source_reference
+      - notes
+
+    historical_backtest_usage:
+      allowed: conditional
+      condition: >
+        The override may only be used historically when its effective knowledge
+        time is demonstrably <= prediction_timestamp.
+
+    ingestion_rules:
+      - "Manual context never mutates raw provider data."
+      - "Overrides are applied in the canonical/context layer."
+      - "All overrides are version controlled."
+      - "Manual context has explicit provenance."
+
+# =============================================================================
+# VIRTUAL ADVANCED PROVIDER
+# =============================================================================
+
+advanced_football_provider:
+  type: virtual_composite_adapter
+  required: true
+  implementation_strategy: free_composite
+  paid_dependency: false
+
+  description: >
+    Logical provider used by canonical schemas and data requirements.
+    It does not correspond to a single vendor. The adapter composes the best
+    available free fields from API-Football Free, StatsBomb Open Data,
+    Official FPL API, Football-Data and manual context.
+
+  constituent_sources:
+    - api_football_free
+    - statsbomb_open_data
+    - official_fpl_api
+    - football_data
+    - manual_context
+
+  field_resolution_policy:
+
+    player_xg:
+      premier_league_current:
+        - official_fpl_api
+        - statsbomb_open_data
+      other_competitions:
+        - statsbomb_open_data
+        - api_football_free
+      missing_action: explicit_null
+
+    player_xa:
+      premier_league_current:
+        - official_fpl_api
+        - statsbomb_open_data
+      other_competitions:
+        - statsbomb_open_data
+        - api_football_free
+      missing_action: explicit_null
+
+    player_npxg:
+      preferred:
+        - statsbomb_open_data
+      fallback:
+        - derive_if_penalty_xg_information_is_available
+      missing_action: explicit_null
+
+    shots:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      fallback:
+        - official_fpl_api_if_field_exists
+      missing_action: explicit_null
+
+    shots_on_target:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      missing_action: explicit_null
+
+    shots_in_box:
+      preferred:
+        - statsbomb_open_data
+      fallback:
+        - derive_from_event_coordinates_if_available
+      missing_action: explicit_null
+
+    big_chances:
+      preferred:
+        - api_football_free_if_coverage_supports
+      missing_action: explicit_null
+
+    big_chances_created:
+      preferred:
+        - api_football_free_if_coverage_supports
+      missing_action: explicit_null
+
+    key_passes:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      missing_action: explicit_null
+
+    touches_in_box:
+      preferred:
+        - statsbomb_open_data
+      fallback:
+        - derive_from_events_if_available
+      missing_action: explicit_null
+
+    progressive_actions:
+      preferred:
+        - statsbomb_open_data
+      fallback:
+        - derive_from_event_coordinates_if_available
+      missing_action: explicit_null
+
+    lineups:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      fallback:
+        - manual_context
+      missing_action: explicit_null
+
+    formations:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      fallback:
+        - manual_context
+      missing_action: explicit_null
+
+    detailed_positions:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      fallback:
+        - manual_context
+      missing_action: explicit_null
+
+    substitutions:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      fallback:
+        - official_fpl_api_minutes
+      missing_action: explicit_null
+
+    injuries:
+      preferred:
+        - official_fpl_api
+        - api_football_free
+      fallback:
+        - fplcache
+        - manual_context
+      missing_action: explicit_null
+
+    suspensions:
+      preferred:
+        - api_football_free
+      fallback:
+        - official_fpl_api
+        - manual_context
+      missing_action: explicit_null
+
+    transfers:
+      preferred:
+        - api_football_free
+      fallback:
+        - manual_context
+      missing_action: explicit_null
+
+    managers:
+      preferred:
+        - api_football_free
+      fallback:
+        - manual_context
+      missing_action: explicit_null
+
+    cross_league_player_history:
+      preferred:
+        - api_football_free
+        - statsbomb_open_data
+      fallback:
+        - manual_context
+      missing_action: explicit_null
+
+  hard_rules:
+    - "Never invent an unavailable advanced statistic."
+    - "Never replace missing data with zero unless zero is semantically proven."
+    - "Every canonical field records actual source_provider."
+    - "Models must support missing advanced fields."
+    - "Provider coverage differences must be represented as missingness features where useful."
+
+# =============================================================================
+# PAID PROVIDERS — OPTIONAL ONLY
+# =============================================================================
+
+future_optional_paid_sources:
+
+  sportmonks:
+    enabled: false
+    required: false
+    role: optional_future_provider
+    reason_to_consider:
+      - richer_cross_league_history
+      - consistent_xg_coverage
+      - richer_lineups_and_positions
+    architecture_rule: >
+      Enabling Sportmonks in the future must require only an adapter and mapping
+      changes, not modifications to model interfaces.
+
+  paid_bookmaker_api:
+    enabled: false
+    required: false
+    role: optional_future_provider
+
+# =============================================================================
+# DISCOURAGED / NON-CORE SOURCES
+# =============================================================================
+
+non_core_sources:
+
+  fbref:
+    enabled: false
+    reason:
+      - "Do not make the project depend on automated FBref extraction."
+      - "Provider availability/terms can change."
+
+  sofascore_scraping:
+    enabled: false
+    reason:
+      - "Do not build the core project around unofficial scraping."
+
+  fotmob_scraping:
+    enabled: false
+    reason:
+      - "Do not build the core project around unofficial scraping."
+
+  understat:
+    enabled: false
+    reason:
+      - "May be evaluated later as supplementary history, but is not required."
+
+# =============================================================================
+# QUOTA & CACHE POLICY
+# =============================================================================
+
+cache_policy:
+
+  directory_convention:
+    raw: "data/raw/{provider}/{entity_or_endpoint}/{date_or_season}/"
+    snapshots: "data/snapshots/{provider}/{timestamp}/"
+
+  immutable_historical_data:
+    refresh: never_unless_source_version_changes
+
+  current_fpl_state:
+    refresh: configurable
+
+  fixture_lineups:
+    refresh:
+      before_match: false
+      after_lineup_release: true
+      after_match: false_after_successful_final_capture
+
+  injuries:
+    refresh: frequent_but_quota_aware
+
+  transfers:
+    refresh: daily_or_less
+
+  provider_metadata:
+    required:
+      - source_provider
+      - source_record_id
+      - retrieved_at
+      - effective_at_when_known
+      - response_checksum
+      - schema_version
+
+# =============================================================================
+# FREE API-FOOTBALL REQUEST BUDGET
+# =============================================================================
+
+api_football_daily_budget:
+
+  hard_limit_requests: 100
+  safety_target_requests: 80
+  reserve_requests: 20
+
+  suggested_allocation:
+    lineups_formations: 25
+    injuries_sidelined: 20
+    fixtures_schedule: 10
+    transfers: 10
+    coaches: 5
+    player_statistics: 10
+    market_or_misc: 10
+
+  rules:
+    - "Unused allocation may be reassigned dynamically."
+    - "Never exceed provider quota intentionally."
+    - "Cache hit must cost zero provider requests."
+    - "Bulk endpoints are preferred."
+    - "Historical immutable data is downloaded once."
+
+# =============================================================================
+# CURRENT DATA STACK SUMMARY
+# =============================================================================
+
+stack_summary:
+
+  current_fpl:
+    source: official_fpl_api
+
+  historical_fpl:
+    source: vaastav_fpl
+
+  predeadline_history:
+    sources:
+      - fplcache
+      - locally_archived_fpl_snapshots
+
+  lineups_and_formations:
+    sources:
+      - api_football_free
+      - statsbomb_open_data
+
+  injuries:
+    sources:
+      - official_fpl_api
+      - api_football_free
+      - fplcache
+
+  transfers_and_managers:
+    sources:
+      - api_football_free
+      - manual_context
+
+  advanced_events:
+    sources:
+      - statsbomb_open_data
+      - api_football_free
+      - official_fpl_api
+
+  premier_league_xg_xa:
+    source: official_fpl_api
+
+  cross_league_history:
+    sources:
+      - api_football_free
+      - statsbomb_open_data
+      - manual_context
+
+  bookmaker_baseline:
+    sources:
+      - football_data
+      - api_football_free
+
+  context_overrides:
+    source: manual_context
+
+# =============================================================================
+# ACCEPTANCE CRITERIA
+# =============================================================================
+
+acceptance_criteria:
+  - "The full system can operate without any paid data provider."
+  - "All required provider adapters expose canonical schemas."
+  - "No model imports provider-specific API response objects."
+  - "API-Football free quota is managed through caching and request budgeting."
+  - "Current Premier League xG/xA can be obtained without a paid provider."
+  - "Lineups/formations have at least one free automated source plus manual fallback."
+  - "Historical point-in-time FPL state has an archive strategy."
+  - "Cross-league gaps remain explicit and do not result in fabricated statistics."
+  - "Paid providers can be added later without changing model contracts."

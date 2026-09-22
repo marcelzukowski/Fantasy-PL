@@ -1,0 +1,2162 @@
+```yaml
+version: 1
+
+project: FPL Prediction & Decision Engine
+
+description: >
+  Implementation roadmap for building the complete FPL prediction and
+  decision system incrementally without creating a disposable MVP.
+
+  Each task should be small enough to be completed, tested and reviewed
+  independently by Codex.
+
+# =============================================================================
+# EXECUTION PRINCIPLES
+# =============================================================================
+
+execution_rules:
+
+  architecture:
+    - "Implement the final architecture incrementally."
+    - "Do not create throw-away components that will later require redesign."
+    - "Stable interfaces and canonical schemas come before model complexity."
+    - "Models must never depend directly on provider-specific response schemas."
+
+  codex:
+    one_task_per_run: true
+
+    required_reading:
+      - "docs/00_PROJECT_CONTEXT.md"
+      - "relevant module specification"
+      - "docs/01_DATA/leakage_rules.md"
+      - "this roadmap task"
+
+    instructions:
+      - "Implement only the requested task."
+      - "Do not implement future roadmap tasks unless required by the current task contract."
+      - "Run relevant tests before finishing."
+      - "Do not silently change documented interfaces."
+      - "If specification and existing code conflict, report the conflict rather than inventing a new architecture."
+
+  completion:
+    task_is_done_only_if:
+      - implementation_complete
+      - tests_added
+      - tests_pass
+      - interfaces_match_specification
+      - documentation_updated_if_required
+
+  priorities:
+    P0: required_for_core_system
+    P1: important_after_core
+    P2: optional_advanced
+
+# =============================================================================
+# PROJECT PHASES
+# =============================================================================
+
+phases:
+
+  - id: PHASE-01
+    name: Foundation
+    goal: "Create canonical project infrastructure and stable data contracts."
+
+  - id: PHASE-02
+    name: Data ingestion
+    goal: "Build reproducible, cached, point-in-time-safe data acquisition."
+
+  - id: PHASE-03
+    name: Canonical data layer
+    goal: "Normalize provider data and build model-ready temporal datasets."
+
+  - id: PHASE-04
+    name: Team and context models
+    goal: "Build team strength, tactical context and availability."
+
+  - id: PHASE-05
+    name: Minutes and talent
+    goal: "Build player playing-time and underlying-talent models."
+
+  - id: PHASE-06
+    name: Event prediction
+    goal: "Generate fixture-specific football event probabilities."
+
+  - id: PHASE-07
+    name: Simulation and scoring
+    goal: "Simulate coherent matches and convert them into FPL points."
+
+  - id: PHASE-08
+    name: Projection layer
+    goal: "Create single- and multi-GW player projection distributions."
+
+  - id: PHASE-09
+    name: Optimizer
+    goal: "Create valid FPL squad, transfer and chip decisions."
+
+  - id: PHASE-10
+    name: Backtesting
+    goal: "Prove every model and strategy out of sample."
+
+  - id: PHASE-11
+    name: Production pipeline
+    goal: "Automate current-GW refresh, predictions and recommendations."
+
+# =============================================================================
+# PHASE 01 — FOUNDATION
+# =============================================================================
+
+tasks:
+
+  - id: CORE-001
+    phase: PHASE-01
+    title: "Create package structure"
+    priority: P0
+    status: not_started
+
+    objective: >
+      Create the Python package structure for data, features, models,
+      simulation, scoring, optimization and validation.
+
+    outputs:
+      - "src/fpl_engine/"
+      - "src/fpl_engine/data/"
+      - "src/fpl_engine/features/"
+      - "src/fpl_engine/models/"
+      - "src/fpl_engine/simulation/"
+      - "src/fpl_engine/scoring/"
+      - "src/fpl_engine/optimizer/"
+      - "src/fpl_engine/validation/"
+      - "src/fpl_engine/config/"
+      - "tests/"
+
+    tests:
+      - "Package imports successfully."
+      - "pytest can discover tests."
+
+    definition_of_done:
+      - "No business logic required."
+      - "Project imports without errors."
+
+  - id: CORE-002
+    phase: PHASE-01
+    title: "Create dependency configuration"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-001
+
+    objective: >
+      Create Python project dependency and tooling configuration.
+
+    recommended_dependencies:
+      core:
+        - pandas
+        - polars
+        - pyarrow
+        - duckdb
+        - numpy
+        - scipy
+        - scikit-learn
+        - pydantic
+        - pyyaml
+        - requests
+        - httpx
+        - tenacity
+      modelling:
+        - catboost
+        - statsmodels
+      validation:
+        - pytest
+        - pytest-cov
+      optional:
+        - optuna
+
+    outputs:
+      - "pyproject.toml"
+
+    tests:
+      - "Dependencies install."
+      - "Package import test passes."
+
+  - id: CORE-003
+    phase: PHASE-01
+    title: "Implement configuration loader"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-001
+      - CORE-002
+
+    objective: >
+      Load YAML project configuration with validation and typed access.
+
+    inputs:
+      - "docs/01_DATA/data_sources.yaml"
+      - "docs/03_SIMULATION/scoring_rules.yaml"
+      - "docs/04_OPTIMIZER/fpl_rules.yaml"
+
+    outputs:
+      - "src/fpl_engine/config/loader.py"
+
+    tests:
+      - "Valid YAML loads."
+      - "Missing required config fails explicitly."
+      - "Invalid YAML fails explicitly."
+
+  - id: CORE-004
+    phase: PHASE-01
+    title: "Implement project logging"
+    priority: P0
+    status: not_started
+
+    objective: >
+      Add structured logging for ingestion, model training, simulation,
+      optimization and backtesting.
+
+    outputs:
+      - "src/fpl_engine/logging.py"
+
+    tests:
+      - "Logger initializes."
+      - "Context metadata can be attached."
+
+  - id: CORE-005
+    phase: PHASE-01
+    title: "Implement canonical metadata types"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-001
+
+    objective: >
+      Define canonical metadata structures used throughout the pipeline.
+
+    required_types:
+      - PredictionContext
+      - DatasetVersion
+      - FeatureVersion
+      - ModelVersion
+      - SourceProvenance
+
+    required_fields:
+      PredictionContext:
+        - prediction_timestamp
+        - target_gameweek
+
+    outputs:
+      - "src/fpl_engine/types.py"
+
+    tests:
+      - "Prediction timestamp is mandatory."
+      - "Invalid timestamps fail validation."
+
+# =============================================================================
+# PHASE 02 — DATA INGESTION
+# =============================================================================
+
+  - id: DATA-001
+    phase: PHASE-02
+    title: "Implement raw data storage"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-003
+
+    objective: >
+      Create append-only storage for immutable raw provider responses.
+
+    storage:
+      format:
+        - json
+        - parquet
+      structure: "data/raw/{provider}/{entity}/{date_or_season}/"
+
+    requirements:
+      - source_provider
+      - retrieved_at
+      - checksum
+      - raw payload preservation
+
+    outputs:
+      - "src/fpl_engine/data/raw_store.py"
+
+    tests:
+      - "Existing snapshot is not overwritten."
+      - "Checksum is deterministic."
+      - "UTC retrieval time stored."
+
+  - id: DATA-002
+    phase: PHASE-02
+    title: "Implement HTTP cache"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-001
+
+    objective: >
+      Prevent repeated provider calls and support free API quotas.
+
+    outputs:
+      - "src/fpl_engine/data/http_cache.py"
+
+    tests:
+      - "Cached request avoids second HTTP call."
+      - "Cache invalidation works."
+      - "Immutable historical response remains cached."
+
+  - id: DATA-003
+    phase: PHASE-02
+    title: "Implement Official FPL API adapter"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-001
+      - DATA-002
+
+    specification:
+      source: official_fpl_api
+
+    endpoints:
+      - bootstrap-static
+      - fixtures
+      - element-summary
+      - event-live
+
+    outputs:
+      - "src/fpl_engine/data/providers/fpl_api.py"
+
+    tests:
+      - "Response can be loaded from fixture files without network."
+      - "Raw response is persisted."
+      - "Provider errors fail cleanly."
+
+  - id: DATA-004
+    phase: PHASE-02
+    title: "Implement Vaastav adapter"
+    priority: P0
+    status: not_started
+
+    objective: >
+      Load historical FPL Gameweek datasets and preserve source version.
+
+    outputs:
+      - "src/fpl_engine/data/providers/vaastav.py"
+
+    tests:
+      - "Historical season loads."
+      - "Source commit/version is recorded."
+      - "xP is not automatically included as a safe feature."
+
+  - id: DATA-005
+    phase: PHASE-02
+    title: "Implement fplcache adapter"
+    priority: P0
+    status: not_started
+
+    objective: >
+      Read historical FPL snapshots and select point-in-time-safe snapshots.
+
+    outputs:
+      - "src/fpl_engine/data/providers/fplcache.py"
+
+    tests:
+      - "Latest snapshot strictly before deadline is selected."
+      - "Future snapshot is never selected."
+      - "Missing pre-deadline snapshot returns missing state."
+
+  - id: DATA-006
+    phase: PHASE-02
+    title: "Implement API-Football adapter"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-002
+
+    endpoints_priority:
+      - fixtures
+      - lineups
+      - injuries
+      - sidelined
+      - transfers
+      - coaches
+      - player_statistics
+
+    requirements:
+      - quota tracking
+      - caching
+      - bulk requests where possible
+
+    outputs:
+      - "src/fpl_engine/data/providers/api_football.py"
+
+    tests:
+      - "Cached endpoint uses no quota."
+      - "Quota exhaustion fails gracefully."
+      - "Provider IDs remain provider-specific."
+
+  - id: DATA-007
+    phase: PHASE-02
+    title: "Implement StatsBomb Open Data adapter"
+    priority: P1
+    status: not_started
+
+    outputs:
+      - "src/fpl_engine/data/providers/statsbomb_open.py"
+
+    required_datasets:
+      - competitions
+      - matches
+      - lineups
+      - events
+
+    tests:
+      - "Competition coverage is explicit."
+      - "Missing competition is not interpreted as zero."
+
+  - id: DATA-008
+    phase: PHASE-02
+    title: "Implement football-data.co.uk adapter"
+    priority: P0
+    status: not_started
+
+    objective: >
+      Load historical match statistics and bookmaker files.
+
+    outputs:
+      - "src/fpl_engine/data/providers/football_data.py"
+
+    tests:
+      - "CSV schema variation handled."
+      - "Original columns preserved."
+      - "Odds fields can be marked point-in-time unsafe."
+
+  - id: DATA-009
+    phase: PHASE-02
+    title: "Implement local FPL snapshot collector"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-003
+
+    objective: >
+      Store current FPL state snapshots for future point-in-time backtesting.
+
+    output_path:
+      "data/snapshots/official_fpl_api/{timestamp}/"
+
+    tests:
+      - "Snapshot is append-only."
+      - "Timestamp and checksum stored."
+
+  - id: DATA-010
+    phase: PHASE-02
+    title: "Implement manual context loader"
+    priority: P0
+    status: not_started
+
+    objective: >
+      Load temporal manual tactical/context overrides.
+
+    outputs:
+      - "src/fpl_engine/data/manual_context.py"
+      - "config/manual_context.yaml"
+
+    required_fields:
+      - effective_from
+      - effective_to
+      - created_at
+      - confidence
+      - reason
+
+    tests:
+      - "Future-created override cannot be used historically."
+      - "Expired override is not active."
+
+# =============================================================================
+# PHASE 03 — CANONICAL DATA
+# =============================================================================
+
+  - id: ID-001
+    phase: PHASE-03
+    title: "Create canonical entity schemas"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-005
+
+    entities:
+      - player
+      - team
+      - fixture
+      - manager
+      - competition
+
+    outputs:
+      - "src/fpl_engine/data/schemas/entities.py"
+
+    tests:
+      - "Canonical IDs cannot be provider IDs by assumption."
+      - "Entity schemas validate."
+
+  - id: ID-002
+    phase: PHASE-03
+    title: "Implement player identity resolution"
+    priority: P0
+    status: not_started
+    depends_on:
+      - ID-001
+
+    specification:
+      - "docs/01_DATA/identity_resolution.md"
+
+    outputs:
+      - canonical_player_map
+      - unresolved_player_queue
+
+    tests:
+      - "Exact mapping."
+      - "Alias mapping."
+      - "Transfer preserves player identity."
+      - "Ambiguous fuzzy match is not auto-confirmed."
+
+  - id: ID-003
+    phase: PHASE-03
+    title: "Implement team identity resolution"
+    priority: P0
+    status: not_started
+    depends_on:
+      - ID-001
+
+    tests:
+      - "Provider team IDs map to one canonical team."
+      - "Historical name change can be represented."
+
+  - id: ID-004
+    phase: PHASE-03
+    title: "Implement fixture identity resolution"
+    priority: P0
+    status: not_started
+    depends_on:
+      - ID-003
+
+    requirements:
+      - home team
+      - away team
+      - competition
+      - season
+      - kickoff tolerance
+
+    tests:
+      - "Postponed fixture remains same canonical fixture."
+      - "DGW gameweek is not part of fixture identity."
+
+  - id: ID-005
+    phase: PHASE-03
+    title: "Implement temporal player-team spells"
+    priority: P0
+    status: not_started
+    depends_on:
+      - ID-002
+      - ID-003
+
+    outputs:
+      - dim_player_team_spell
+
+    tests:
+      - "Transfer changes spell."
+      - "Prediction resolves club valid at timestamp."
+
+  - id: ID-006
+    phase: PHASE-03
+    title: "Implement temporal manager-team spells"
+    priority: P0
+    status: not_started
+
+    outputs:
+      - dim_manager_team_spell
+
+    tests:
+      - "Manager change respects effective dates."
+
+  - id: DATA-011
+    phase: PHASE-03
+    title: "Create canonical DuckDB schema"
+    priority: P0
+    status: not_started
+    depends_on:
+      - ID-001
+
+    required_tables:
+      - dim_player
+      - dim_team
+      - dim_fixture
+      - dim_manager
+      - dim_competition
+      - dim_player_provider_map
+      - dim_team_provider_map
+      - dim_player_team_spell
+      - dim_manager_team_spell
+      - fact_player_fixture
+      - fact_team_fixture
+      - fact_fpl_snapshot
+
+    outputs:
+      - "src/fpl_engine/data/database.py"
+
+    tests:
+      - "Schema creation is idempotent."
+
+  - id: DATA-012
+    phase: PHASE-03
+    title: "Build canonical FPL player-fixture table"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-003
+      - DATA-004
+      - ID-002
+      - ID-004
+      - DATA-011
+
+    outputs:
+      - fact_player_fixture
+
+    tests:
+      - "One player-fixture row per canonical identity."
+      - "No duplicate fixture-player keys."
+
+  - id: DATA-013
+    phase: PHASE-03
+    title: "Build canonical team-fixture table"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-008
+      - ID-004
+      - DATA-011
+
+    outputs:
+      - fact_team_fixture
+
+    tests:
+      - "Exactly two team rows per completed fixture where data exists."
+
+  - id: DATA-014
+    phase: PHASE-03
+    title: "Build point-in-time snapshot resolver"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-005
+      - DATA-009
+
+    interface:
+      resolve_state:
+        inputs:
+          - entity
+          - prediction_timestamp
+        rule: "latest known state at or before prediction timestamp"
+
+    tests:
+      - "Future state never returned."
+
+  - id: DATA-015
+    phase: PHASE-03
+    title: "Implement leakage assertion utilities"
+    priority: P0
+    status: not_started
+
+    outputs:
+      - "src/fpl_engine/validation/leakage.py"
+
+    tests:
+      - "Feature after prediction timestamp fails."
+      - "Target fixture before prediction timestamp fails."
+      - "Future snapshot fails."
+
+# =============================================================================
+# PHASE 04 — TEAM AND CONTEXT
+# =============================================================================
+
+  - id: MODEL-001
+    phase: PHASE-04
+    title: "Implement Team Strength baselines"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-013
+      - DATA-015
+
+    baselines:
+      - league_average
+      - rolling_goals
+      - rolling_xg
+      - poisson
+
+    outputs:
+      - "src/fpl_engine/models/team_strength/baselines.py"
+
+    tests:
+      - "Features contain only past matches."
+      - "Goal distributions sum to one."
+
+  - id: MODEL-002
+    phase: PHASE-04
+    title: "Implement Dixon-Coles Team Strength model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MODEL-001
+
+    specification:
+      - "docs/02_MODELS/team_strength.md"
+
+    required:
+      - attack_strength
+      - defence_strength
+      - home_advantage
+      - score_distribution
+      - clean_sheet_probability
+
+    tests:
+      - "Expected goals non-negative."
+      - "Fixture home/away outputs coherent."
+
+  - id: MODEL-003
+    phase: PHASE-04
+    title: "Add Team Strength time decay and priors"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MODEL-002
+
+    required:
+      - exponential time decay
+      - previous-season prior
+      - promoted-team shrinkage
+
+    tests:
+      - "Early-season predictions use prior."
+      - "Prior influence declines with evidence."
+
+  - id: MODEL-004
+    phase: PHASE-04
+    title: "Add Team Strength regime context"
+    priority: P1
+    status: not_started
+    depends_on:
+      - MODEL-003
+      - CONTEXT-002
+
+    features:
+      - manager_change
+      - fixture_congestion
+
+    tests:
+      - "Pre-manager history retained."
+      - "Regime weighting is temporal."
+
+  - id: CONTEXT-001
+    phase: PHASE-04
+    title: "Implement tactical role taxonomy"
+    priority: P0
+    status: not_started
+
+    specification:
+      - "docs/02_MODELS/tactical_context.md"
+
+    outputs:
+      - "src/fpl_engine/features/tactical_roles.py"
+
+    tests:
+      - "FPL position remains distinct from tactical role."
+
+  - id: CONTEXT-002
+    phase: PHASE-04
+    title: "Implement temporal tactical context engine"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CONTEXT-001
+      - DATA-006
+      - DATA-010
+      - ID-006
+
+    outputs:
+      - current_tactical_role
+      - dominant_formation
+      - manager_regime
+      - regime_flags
+      - role_confidence
+
+    tests:
+      - "Future target lineup never used."
+      - "Manual override respects knowledge time."
+
+  - id: CONTEXT-003
+    phase: PHASE-04
+    title: "Implement set-piece hierarchy"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CONTEXT-002
+
+    types:
+      - penalties
+      - direct_free_kicks
+      - indirect_free_kicks
+      - corners_left
+      - corners_right
+
+    tests:
+      - "Hierarchy is temporal."
+      - "Unavailable first taker falls to next ranked player."
+
+  - id: CONTEXT-004
+    phase: PHASE-04
+    title: "Implement squad competition features"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CONTEXT-002
+
+    outputs:
+      - role_competitor_set
+      - squad_competition_score
+      - role_security_score
+
+    tests:
+      - "Competition is role-specific."
+
+  - id: CONTEXT-005
+    phase: PHASE-04
+    title: "Implement availability context"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-003
+      - DATA-005
+      - DATA-006
+
+    outputs:
+      - availability_probability
+      - suspension_block
+      - injury_severity_bucket
+      - workload_score
+      - availability_confidence
+
+    tests:
+      - "Confirmed suspension blocks target fixture."
+      - "Historical status uses pre-deadline information."
+
+# =============================================================================
+# PHASE 05 — MINUTES AND TALENT
+# =============================================================================
+
+  - id: MIN-001
+    phase: PHASE-05
+    title: "Build Minutes training dataset"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-012
+      - CONTEXT-004
+      - CONTEXT-005
+      - DATA-015
+
+    targets:
+      - appeared
+      - started
+      - minutes
+
+    outputs:
+      - "src/fpl_engine/features/minutes_dataset.py"
+
+    tests:
+      - "Target-match lineup never exists in features."
+      - "All feature timestamps <= prediction timestamp."
+
+  - id: MIN-002
+    phase: PHASE-05
+    title: "Implement Minutes baselines"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-001
+
+    baselines:
+      - previous_match_minutes
+      - rolling_5_minutes
+      - rolling_5_start_rate
+      - empirical_hurdle
+
+    tests:
+      - "xMins within valid range."
+
+  - id: MIN-003
+    phase: PHASE-05
+    title: "Implement appearance and start models"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-002
+
+    preferred:
+      - CatBoostClassifier
+
+    outputs:
+      - p_appearance
+      - p_start
+
+    tests:
+      - "Probabilities in [0,1]."
+
+  - id: MIN-004
+    phase: PHASE-05
+    title: "Implement starter minutes model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-003
+
+    outputs:
+      - starter_minutes_distribution
+
+    tests:
+      - "Distribution sums to one."
+
+  - id: MIN-005
+    phase: PHASE-05
+    title: "Implement bench appearance/minutes model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-003
+
+    outputs:
+      - p_bench_appearance
+      - bench_minutes_distribution
+
+  - id: MIN-006
+    phase: PHASE-05
+    title: "Implement complete Minutes mixture"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-004
+      - MIN-005
+
+    outputs:
+      - p_zero_minutes
+      - p_start
+      - expected_minutes
+      - p_60_plus
+      - p_75_plus
+      - p_90
+      - minute_bucket_distribution
+      - minutes_uncertainty
+
+    tests:
+      - "p90 <= p75 <= p60 <= p_appearance."
+      - "Distribution sums to one."
+
+  - id: MIN-007
+    phase: PHASE-05
+    title: "Calibrate Minutes probabilities"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-006
+
+    candidates:
+      - isotonic
+      - platt
+
+    tests:
+      - "Calibration artifact fitted only on historical training/validation data."
+
+  - id: TAL-001
+    phase: PHASE-05
+    title: "Build Player Talent feature dataset"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-012
+      - MODEL-003
+      - CONTEXT-002
+
+    required_features:
+      - npxg_per90
+      - xa_per90
+      - shots_per90
+      - team_share
+      - tactical_role
+      - opponent_strength
+
+  - id: TAL-002
+    phase: PHASE-05
+    title: "Implement Talent baselines"
+    priority: P0
+    status: not_started
+    depends_on:
+      - TAL-001
+
+    baselines:
+      - season_to_date_per90
+      - exponentially_weighted_per90
+
+  - id: TAL-003
+    phase: PHASE-05
+    title: "Implement empirical Bayes shrinkage"
+    priority: P0
+    status: not_started
+    depends_on:
+      - TAL-002
+
+    hierarchy:
+      - position
+      - tactical_role
+      - player
+
+    outputs:
+      - talent_npxg_per90
+      - talent_xa_per90
+      - uncertainty
+      - sample_reliability
+
+  - id: TAL-004
+    phase: PHASE-05
+    title: "Implement team-share talent adjustment"
+    priority: P0
+    status: not_started
+    depends_on:
+      - TAL-003
+
+    features:
+      - npxg_share
+      - xa_share
+      - shot_share
+      - box_touch_share_when_available
+
+  - id: TAL-005
+    phase: PHASE-05
+    title: "Implement transfer and regime weighting"
+    priority: P0
+    status: not_started
+    depends_on:
+      - TAL-004
+      - CONTEXT-002
+      - ID-005
+
+    tests:
+      - "Old history retained."
+      - "Context weight changes after transfer."
+
+  - id: TAL-006
+    phase: PHASE-05
+    title: "Implement cross-league translation baseline"
+    priority: P1
+    status: not_started
+    depends_on:
+      - TAL-005
+
+    objective: >
+      Estimate Premier League translation using historical cross-league transfers
+      when sufficient data exists.
+
+    fallback:
+      - role_prior
+      - high_uncertainty
+
+    tests:
+      - "Unsupported league never receives invented coefficient."
+
+# =============================================================================
+# PHASE 06 — EVENT MODELS
+# =============================================================================
+
+  - id: EVT-001
+    phase: PHASE-06
+    title: "Implement Player Fixture Rate model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MODEL-003
+      - MIN-006
+      - TAL-005
+      - CONTEXT-003
+
+    outputs:
+      - fixture_npxg_per90
+      - fixture_penalty_xg_per90
+      - fixture_xa_per90
+      - fixture_defcon_per90
+
+  - id: EVT-002
+    phase: PHASE-06
+    title: "Implement Goal Model baseline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - EVT-001
+
+    outputs:
+      - expected_goals
+      - p_goal
+      - goal_distribution
+
+  - id: EVT-003
+    phase: PHASE-06
+    title: "Implement penalty process"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CONTEXT-003
+      - EVT-002
+
+    required:
+      - penalty_award_probability
+      - taker_selection
+      - conversion_probability
+      - miss_probability
+
+  - id: EVT-004
+    phase: PHASE-06
+    title: "Implement Assist Model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - EVT-001
+      - CONTEXT-003
+
+    outputs:
+      - expected_assists
+      - p_assist
+      - assist_distribution
+
+  - id: EVT-005
+    phase: PHASE-06
+    title: "Implement Clean Sheet event interface"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MODEL-003
+      - MIN-006
+
+    outputs:
+      - team_clean_sheet_probability
+      - player_clean_sheet_context
+
+  - id: EVT-006
+    phase: PHASE-06
+    title: "Implement goalkeeper Save Model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MODEL-003
+      - MIN-006
+
+    outputs:
+      - expected_saves
+      - save_distribution
+
+  - id: EVT-007
+    phase: PHASE-06
+    title: "Implement Defensive Contribution Model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - EVT-001
+      - MIN-006
+
+    outputs:
+      - expected_defensive_contributions
+      - defcon_distribution
+
+  - id: EVT-008
+    phase: PHASE-06
+    title: "Implement Card Model"
+    priority: P1
+    status: not_started
+    depends_on:
+      - MIN-006
+
+    outputs:
+      - p_yellow
+      - p_red
+
+  - id: EVT-009
+    phase: PHASE-06
+    title: "Implement Bonus/BPS baseline model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - EVT-002
+      - EVT-004
+      - EVT-005
+      - EVT-006
+      - EVT-007
+      - EVT-008
+
+    outputs:
+      - base_bps_parameters
+
+# =============================================================================
+# PHASE 07 — SIMULATION AND SCORING
+# =============================================================================
+
+  - id: SIM-001
+    phase: PHASE-07
+    title: "Implement simulation random engine"
+    priority: P0
+    status: not_started
+
+    requirements:
+      - reproducible seed
+      - fixture-specific derived seeds
+
+    tests:
+      - "Same seed gives same result."
+
+  - id: SIM-002
+    phase: PHASE-07
+    title: "Implement player minutes sampling"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-001
+      - MIN-006
+
+    tests:
+      - "Sampled minutes follow supplied distribution."
+
+  - id: SIM-003
+    phase: PHASE-07
+    title: "Implement team score sampling"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-001
+      - MODEL-003
+
+    tests:
+      - "Score comes from joint score distribution."
+
+  - id: SIM-004
+    phase: PHASE-07
+    title: "Implement goal timing"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-003
+
+  - id: SIM-005
+    phase: PHASE-07
+    title: "Implement coherent goalscorer allocation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-002
+      - SIM-003
+      - SIM-004
+      - EVT-002
+      - EVT-003
+
+    tests:
+      - "Player cannot score off pitch."
+      - "Player goal total matches team score allocation."
+
+  - id: SIM-006
+    phase: PHASE-07
+    title: "Implement coherent assist allocation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-005
+      - EVT-004
+
+    tests:
+      - "Assister is on pitch."
+      - "Scorer cannot assist self."
+
+  - id: SIM-007
+    phase: PHASE-07
+    title: "Implement clean sheet and conceded-goal timing"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-004
+      - SIM-002
+
+    outputs:
+      - goals_conceded_while_on_pitch
+
+  - id: SIM-008
+    phase: PHASE-07
+    title: "Implement goalkeeper shot/save simulation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-003
+      - EVT-006
+
+    tests:
+      - "Saves >= 0."
+      - "Shots on target >= goals conceded."
+
+  - id: SIM-009
+    phase: PHASE-07
+    title: "Implement defcon and card simulation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - EVT-007
+      - EVT-008
+      - SIM-002
+
+  - id: SIM-010
+    phase: PHASE-07
+    title: "Implement BPS and bonus allocation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-005
+      - SIM-006
+      - SIM-007
+      - SIM-008
+      - SIM-009
+      - EVT-009
+
+    tests:
+      - "Tie rules correct."
+      - "Fixture-relative ranking correct."
+
+  - id: SCORE-001
+    phase: PHASE-07
+    title: "Implement FPL scoring engine"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-003
+
+    specification:
+      - "docs/03_SIMULATION/scoring_rules.yaml"
+
+    outputs:
+      - "src/fpl_engine/scoring/engine.py"
+
+    tests:
+      - "All scoring-rule examples pass."
+
+  - id: SCORE-002
+    phase: PHASE-07
+    title: "Integrate simulator with scoring engine"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-010
+      - SCORE-001
+
+    outputs:
+      - simulated_player_fpl_points
+
+    tests:
+      - "Golden deterministic fixture produces expected FPL score."
+
+  - id: SIM-011
+    phase: PHASE-07
+    title: "Implement simulation aggregation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SCORE-002
+
+    outputs:
+      - expected_points
+      - median_points
+      - point_quantiles
+      - p_blank
+      - p_return
+      - p_5_plus
+      - p_8_plus
+      - p_10_plus
+      - p_15_plus
+
+  - id: SIM-012
+    phase: PHASE-07
+    title: "Implement simulation convergence benchmark"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-011
+
+    counts:
+      - 1000
+      - 5000
+      - 10000
+      - 25000
+
+    objective:
+      - determine production simulation count
+
+# =============================================================================
+# PHASE 08 — PROJECTION
+# =============================================================================
+
+  - id: PROJ-001
+    phase: PHASE-08
+    title: "Implement canonical player projection schema"
+    priority: P0
+    status: not_started
+
+    specification:
+      - "docs/02_MODELS/model_pipeline.yaml"
+
+  - id: PROJ-002
+    phase: PHASE-08
+    title: "Build fixture-level projection pipeline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-011
+      - PROJ-001
+
+  - id: PROJ-003
+    phase: PHASE-08
+    title: "Implement Gameweek aggregation"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PROJ-002
+
+    requirements:
+      - single fixture
+      - DGW
+      - BGW
+
+  - id: PROJ-004
+    phase: PHASE-08
+    title: "Implement 3GW and 6GW projections"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PROJ-003
+
+    outputs:
+      - ev_next_1
+      - ev_next_3
+      - ev_next_6
+      - weighted_ev_next_6
+      - ev_per_million
+
+  - id: PROJ-005
+    phase: PHASE-08
+    title: "Implement projection persistence"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PROJ-004
+
+    storage:
+      - Parquet
+      - DuckDB
+
+# =============================================================================
+# PHASE 09 — OPTIMIZER
+# =============================================================================
+
+  - id: OPT-001
+    phase: PHASE-09
+    title: "Implement FPL rule loader"
+    priority: P0
+    status: not_started
+    depends_on:
+      - CORE-003
+
+    specification:
+      - "docs/04_OPTIMIZER/fpl_rules.yaml"
+
+  - id: OPT-002
+    phase: PHASE-09
+    title: "Implement squad-state validator"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-001
+
+    tests:
+      - squad size
+      - positions
+      - budget
+      - club limit
+      - FT state
+      - chip state
+
+  - id: OPT-003
+    phase: PHASE-09
+    title: "Implement starting XI MILP"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-002
+      - PROJ-003
+
+    solver:
+      preferred: HiGHS
+
+    tests:
+      - "Compare small problem with brute force."
+
+  - id: OPT-004
+    phase: PHASE-09
+    title: "Implement captain and vice optimization"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-003
+
+  - id: OPT-005
+    phase: PHASE-09
+    title: "Implement bench ordering"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-003
+
+    requirements:
+      - autosub rules
+      - formation legality
+
+  - id: OPT-006
+    phase: PHASE-09
+    title: "Implement single-transfer optimization"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-002
+      - PROJ-004
+
+    required_actions:
+      - ROLL_FT
+      - TRANSFER
+
+  - id: OPT-007
+    phase: PHASE-09
+    title: "Implement multiple free transfers and hits"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-006
+
+    tests:
+      - "-4 cost correct."
+      - "Transfer combinations evaluated jointly."
+
+  - id: OPT-008
+    phase: PHASE-09
+    title: "Implement FT state transition"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-007
+
+    tests:
+      - "Cap at 5."
+      - "Roll FT works."
+      - "Use FT and next-GW addition works."
+
+  - id: OPT-009
+    phase: PHASE-09
+    title: "Implement 6GW transfer planning"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-008
+      - PROJ-004
+
+    candidate_method:
+      - beam_search
+      - dynamic_programming
+
+    requirements:
+      - state deduplication
+      - dominance pruning
+      - provisional future actions
+
+  - id: OPT-010
+    phase: PHASE-09
+    title: "Implement Wildcard optimizer"
+    priority: P1
+    status: not_started
+    depends_on:
+      - OPT-003
+      - OPT-009
+
+  - id: OPT-011
+    phase: PHASE-09
+    title: "Implement Free Hit optimizer"
+    priority: P1
+    status: not_started
+    depends_on:
+      - OPT-003
+      - OPT-009
+
+  - id: OPT-012
+    phase: PHASE-09
+    title: "Implement Bench Boost evaluation"
+    priority: P1
+    status: not_started
+    depends_on:
+      - OPT-005
+
+  - id: OPT-013
+    phase: PHASE-09
+    title: "Implement Triple Captain evaluation"
+    priority: P1
+    status: not_started
+    depends_on:
+      - OPT-004
+
+  - id: OPT-014
+    phase: PHASE-09
+    title: "Implement chip timing planner"
+    priority: P1
+    status: not_started
+    depends_on:
+      - OPT-010
+      - OPT-011
+      - OPT-012
+      - OPT-013
+
+  - id: OPT-015
+    phase: PHASE-09
+    title: "Implement recommendation alternatives"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-009
+
+    outputs:
+      - best_action
+      - top_alternatives
+      - decision_margin
+
+  - id: OPT-016
+    phase: PHASE-09
+    title: "Implement sensitivity analysis"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-015
+
+    default_runs: 500
+
+    perturb:
+      - expected_minutes
+      - player_goal_rate
+      - player_assist_rate
+      - team_attack
+      - team_defence
+
+    outputs:
+      - action_selection_frequency
+      - recommendation_confidence
+
+# =============================================================================
+# PHASE 10 — BACKTESTING
+# =============================================================================
+
+  - id: BT-001
+    phase: PHASE-10
+    title: "Implement temporal split utilities"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-015
+
+    specification:
+      - "docs/05_VALIDATION/backtesting.md"
+
+    tests:
+      - "Random split is not used by production backtests."
+
+  - id: BT-002
+    phase: PHASE-10
+    title: "Implement canonical metric registry"
+    priority: P0
+    status: not_started
+
+    specification:
+      - "docs/05_VALIDATION/metrics.md"
+
+    outputs:
+      - "src/fpl_engine/validation/metrics.py"
+
+    tests:
+      - "Perfect predictions give expected metric values."
+
+  - id: BT-003
+    phase: PHASE-10
+    title: "Backtest Team Strength"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MODEL-003
+      - BT-001
+      - BT-002
+
+    compare:
+      - league_average
+      - rolling_xg
+      - poisson
+      - dixon_coles
+
+  - id: BT-004
+    phase: PHASE-10
+    title: "Backtest Minutes Model"
+    priority: P0
+    status: not_started
+    depends_on:
+      - MIN-007
+      - BT-001
+      - BT-002
+
+  - id: BT-005
+    phase: PHASE-10
+    title: "Backtest Player Talent"
+    priority: P0
+    status: not_started
+    depends_on:
+      - TAL-006
+      - BT-001
+      - BT-002
+
+    special_segments:
+      - transfers
+      - cross_league
+      - role_changes
+
+  - id: BT-006
+    phase: PHASE-10
+    title: "Backtest Event Models"
+    priority: P0
+    status: not_started
+    depends_on:
+      - EVT-009
+      - BT-001
+      - BT-002
+
+  - id: BT-007
+    phase: PHASE-10
+    title: "Validate simulation distributions"
+    priority: P0
+    status: not_started
+    depends_on:
+      - SIM-012
+      - BT-002
+
+  - id: BT-008
+    phase: PHASE-10
+    title: "Backtest player FPL projections"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PROJ-005
+      - BT-001
+      - BT-002
+
+    primary:
+      - EV calibration
+      - Spearman
+      - return Brier
+      - haul calibration
+
+  - id: BT-009
+    phase: PHASE-10
+    title: "Implement synthetic historical squad generator"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-002
+
+    requirements:
+      - valid squads
+      - varying budgets
+      - varying FT states
+
+  - id: BT-010
+    phase: PHASE-10
+    title: "Backtest transfer optimizer"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-009
+      - BT-008
+      - BT-009
+
+    baselines:
+      - no_transfer
+      - greedy_1gw
+      - static_6gw
+
+  - id: BT-011
+    phase: PHASE-10
+    title: "Backtest captain and bench decisions"
+    priority: P0
+    status: not_started
+    depends_on:
+      - OPT-005
+      - BT-008
+
+  - id: BT-012
+    phase: PHASE-10
+    title: "Backtest chip planner"
+    priority: P1
+    status: not_started
+    depends_on:
+      - OPT-014
+      - BT-010
+
+  - id: BT-013
+    phase: PHASE-10
+    title: "Implement full-season strategy simulator"
+    priority: P1
+    status: not_started
+    depends_on:
+      - BT-010
+
+    requirements:
+      - persistent squad
+      - historical price evolution
+      - FT state
+      - chips
+      - purchase and selling prices
+
+  - id: BT-014
+    phase: PHASE-10
+    title: "Implement champion/challenger reports"
+    priority: P1
+    status: not_started
+    depends_on:
+      - BT-002
+
+    outputs:
+      - PROMOTE
+      - REJECT
+      - KEEP_TESTING
+
+# =============================================================================
+# PHASE 11 — PRODUCTION PIPELINE
+# =============================================================================
+
+  - id: PIPE-001
+    phase: PHASE-11
+    title: "Implement current data refresh pipeline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - DATA-003
+      - DATA-006
+      - DATA-009
+      - DATA-010
+
+  - id: PIPE-002
+    phase: PHASE-11
+    title: "Implement feature-generation pipeline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PIPE-001
+      - CONTEXT-005
+
+  - id: PIPE-003
+    phase: PHASE-11
+    title: "Implement model inference pipeline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PIPE-002
+      - MODEL-003
+      - MIN-007
+      - TAL-005
+      - EVT-009
+
+  - id: PIPE-004
+    phase: PHASE-11
+    title: "Implement simulation/projection pipeline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PIPE-003
+      - PROJ-005
+
+  - id: PIPE-005
+    phase: PHASE-11
+    title: "Implement squad recommendation pipeline"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PIPE-004
+      - OPT-016
+
+  - id: PIPE-006
+    phase: PHASE-11
+    title: "Create final machine-readable recommendation output"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PIPE-005
+
+    output_schema:
+      - prediction_timestamp
+      - target_gameweek
+      - recommended_action
+      - transfers
+      - starting_xi
+      - bench_order
+      - captain
+      - vice_captain
+      - chip
+      - expected_points
+      - net_expected_gain
+      - confidence
+      - alternatives
+      - provisional_6gw_plan
+
+  - id: PIPE-007
+    phase: PHASE-11
+    title: "Implement post-GW evaluation update"
+    priority: P0
+    status: not_started
+    depends_on:
+      - PIPE-006
+      - BT-002
+
+    objective: >
+      Append actual outcomes and update production monitoring metrics
+      after every completed Gameweek.
+
+# =============================================================================
+# OPTIONAL ADVANCED WORK
+# =============================================================================
+
+  - id: ADV-001
+    phase: PHASE-11
+    title: "CatBoost residual correction for Team Strength"
+    priority: P2
+    status: blocked_until_baseline_validation
+    depends_on:
+      - BT-003
+
+  - id: ADV-002
+    phase: PHASE-11
+    title: "Hierarchical Bayesian Player Talent"
+    priority: P2
+    status: blocked_until_baseline_validation
+    depends_on:
+      - BT-005
+
+  - id: ADV-003
+    phase: PHASE-11
+    title: "Joint lineup sampling"
+    priority: P2
+    status: blocked_until_core_simulation
+    depends_on:
+      - SIM-012
+
+  - id: ADV-004
+    phase: PHASE-11
+    title: "Cross-fixture DGW minutes dependency"
+    priority: P2
+    status: blocked_until_core_validation
+    depends_on:
+      - BT-008
+
+  - id: ADV-005
+    phase: PHASE-11
+    title: "Price-change prediction model"
+    priority: P2
+    status: optional
+    depends_on:
+      - PIPE-001
+
+  - id: ADV-006
+    phase: PHASE-11
+    title: "Rank-aware optimization"
+    priority: P2
+    status: optional
+    depends_on:
+      - OPT-016
+
+  - id: ADV-007
+    phase: PHASE-11
+    title: "Schedule uncertainty scenarios"
+    priority: P2
+    status: optional
+    depends_on:
+      - OPT-014
+
+# =============================================================================
+# FIRST CODEX TASK
+# =============================================================================
+
+first_task:
+  id: CORE-001
+
+  recommended_prompt: >
+    Read docs/00_PROJECT_CONTEXT.md and docs/06_PROJECT/roadmap.yaml.
+    Implement only task CORE-001.
+    Do not implement later tasks.
+    Run the relevant tests before finishing.
+
+# =============================================================================
+# CODEX PROMPT TEMPLATE
+# =============================================================================
+
+codex_prompt_template: |
+
+  Read:
+  - docs/00_PROJECT_CONTEXT.md
+  - docs/06_PROJECT/roadmap.yaml
+  - the specification files relevant to TASK_ID
+
+  Implement only TASK_ID.
+
+  Requirements:
+  - follow existing documented interfaces,
+  - do not implement unrelated future tasks,
+  - preserve point-in-time safety,
+  - add/update tests,
+  - run relevant tests,
+  - report files changed and test results.
+
+# =============================================================================
+# CORE MILESTONES
+# =============================================================================
+
+milestones:
+
+  M1_DATA_READY:
+    required_tasks:
+      - DATA-003
+      - DATA-004
+      - DATA-005
+      - DATA-006
+      - ID-002
+      - ID-003
+      - ID-004
+      - DATA-012
+      - DATA-013
+      - DATA-014
+      - DATA-015
+
+    result: >
+      Historical and current canonical point-in-time datasets can be created.
+
+  M2_CORE_MODELS:
+    required_tasks:
+      - MODEL-003
+      - CONTEXT-005
+      - MIN-007
+      - TAL-005
+      - EVT-009
+
+    result: >
+      Team, minutes, talent, context and event probabilities are available.
+
+  M3_PROJECTIONS:
+    required_tasks:
+      - SIM-012
+      - SCORE-002
+      - PROJ-005
+
+    result: >
+      Player point distributions and 1/3/6 GW projections are available.
+
+  M4_OPTIMIZER:
+    required_tasks:
+      - OPT-009
+      - OPT-016
+
+    result: >
+      Transfers, roll FT, XI, captain and multi-GW decisions are available.
+
+  M5_VALIDATED:
+    required_tasks:
+      - BT-003
+      - BT-004
+      - BT-005
+      - BT-006
+      - BT-007
+      - BT-008
+      - BT-010
+
+    result: >
+      Core prediction and decision system has documented out-of-sample evidence.
+
+  M6_PRODUCTION:
+    required_tasks:
+      - PIPE-001
+      - PIPE-002
+      - PIPE-003
+      - PIPE-004
+      - PIPE-005
+      - PIPE-006
+      - PIPE-007
+
+    result: >
+      One production command can update data, create projections and return
+      an FPL recommendation.
+
+# =============================================================================
+# FINAL ACCEPTANCE
+# =============================================================================
+
+project_acceptance_criteria:
+
+  data:
+    - "Current and historical data ingestion works."
+    - "Canonical identity resolution works."
+    - "Point-in-time leakage checks pass."
+    - "No paid data provider is required."
+
+  models:
+    - "Team Strength beats documented baseline."
+    - "Minutes beats documented baseline."
+    - "Player Talent beats documented baseline."
+    - "Event probabilities are calibrated."
+
+  simulation:
+    - "Match events are internally coherent."
+    - "Simulation is reproducible."
+    - "Monte Carlo convergence is acceptable."
+
+  scoring:
+    - "Season-specific FPL scoring is configuration-driven."
+
+  projection:
+    - "1GW, 3GW and 6GW projections exist."
+    - "Probability distributions and uncertainty are available."
+
+  optimizer:
+    - "ROLL FT is a valid outcome."
+    - "Hits are correctly priced."
+    - "XI, bench, captain and vice are optimized."
+    - "6GW transfer planning works."
+    - "Sensitivity/confidence is available."
+
+  validation:
+    - "Walk-forward backtests exist."
+    - "Strict point-in-time mode exists."
+    - "Advanced models are promoted only when they beat baselines."
+
+  production:
+    - "Pipeline can run end to end."
+    - "Final output is machine-readable."
+    - "LLM is not required for raw prediction or mathematical optimization."
+
+final_rule: >
+  Implement the simplest correct version of each final-architecture component
+  first, validate it, and only then introduce additional complexity when
+  out-of-sample evidence demonstrates measurable value.
+```

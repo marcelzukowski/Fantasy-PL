@@ -1,0 +1,43 @@
+QWidget {
+    background-color: {{ secondaryColor }};
+    color: {{ primaryTextColor }};
+    font-family: "{{ font_family }}";
+    font-size: 10pt;
+}
+QPushButton {
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid {{ secondaryDarkColor }};
+    border-radius: 8px;
+    background-color: {{ secondaryLightColor }};
+    color: {{ primaryColor }};
+    font-weight: 600;
+}
+QPushButton:hover { background-color: {{ secondaryDarkColor }}; }
+QPushButton:pressed { background-color: {{ primaryLightColor }}; color: {{ secondaryTextColor }}; }
+QPushButton:disabled { color: #A69BA8; background-color: #F0EDF1; }
+QComboBox, QSpinBox, QDoubleSpinBox {
+    min-height: 34px;
+    padding: 0 9px;
+    border: 1px solid #CDBDD0;
+    border-radius: 8px;
+    background-color: {{ secondaryLightColor }};
+    color: {{ primaryTextColor }};
+    selection-background-color: {{ primaryLightColor }};
+}
+QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid {{ primaryColor }}; }
+QGroupBox {
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid #DED4E0;
+    border-radius: 12px;
+    background-color: {{ secondaryLightColor }};
+    font-weight: 700;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; color: {{ primaryColor }}; }
+QScrollBar:vertical { width: 10px; background: transparent; margin: 2px; }
+QScrollBar::handle:vertical { min-height: 28px; border-radius: 5px; background: #CDBDD0; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar:horizontal { height: 10px; background: transparent; }
+QScrollBar::handle:horizontal { min-width: 28px; border-radius: 5px; background: #CDBDD0; }
+QToolTip { background: #37003C; color: white; border: 1px solid #D6BDD9; padding: 6px; }

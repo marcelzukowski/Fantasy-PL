@@ -1,0 +1,150 @@
+QMainWindow, QWidget#CentralRoot { background: #FAF9FB; }
+QFrame#Header {
+    background: #FFFFFF;
+    border: 1px solid #E2D8E4;
+    border-radius: 12px;
+}
+QLabel#PremierLeagueLogo { background: transparent; border: 0; }
+QLabel#Title { background: transparent; color: #37003C; font-size: 22pt; font-weight: 800; }
+QLabel#Subtitle { background: transparent; color: #725A76; font-size: 9.5pt; }
+QFrame#ContextBar { background: transparent; border: 0; }
+QLabel#ContextLabel { background: transparent; color: #725A76; font-size: 9pt; font-weight: 700; }
+QFrame#AccountStatusCard { background: #F4ECF6; border: 1px solid #D6BDD9; border-radius: 9px; }
+QLabel#HeaderAccountStatus { background: transparent; color: #37003C; font-size: 9pt; font-weight: 700; }
+QPushButton#Primary, QPushButton#RunFull {
+    background: #37003C; color: white; border: 1px solid #37003C; font-weight: 700;
+}
+QPushButton#Primary:hover, QPushButton#RunFull:hover { background: #5F1A68; border-color: #5F1A68; }
+QPushButton#Secondary { background: #F4ECF6; color: #37003C; border: 1px solid #D6BDD9; }
+QPushButton#DrawerClose { background: #F4ECF6; color: #37003C; border: 1px solid #D6BDD9; }
+QTabWidget#MainTabs::pane { border: 1px solid #E2D8E4; border-radius: 12px; background: white; top: -1px; }
+QTabWidget#MainTabs QTabBar::tab {
+    min-height: 36px; min-width: 112px; padding: 0 20px; margin-right: 6px;
+    border: 1px solid #D6BDD9; border-radius: 9px; background: #F4ECF6;
+    color: #37003C; font-size: 10pt; font-weight: 750;
+}
+QTabWidget#MainTabs QTabBar::tab:selected { background: #37003C; color: white; border-color: #37003C; }
+QTabWidget#MainTabs QTabBar::tab:hover:!selected { background: #E9D9EB; }
+QGroupBox#SquadDashboard { margin-top: 0; padding: 8px; }
+QGroupBox#SquadDashboard::title { color: transparent; }
+QFrame#OwnedPanel { background: #FFFFFF; border: 1px solid #DED4E0; border-radius: 10px; }
+QLabel#PanelTitle { background: transparent; color: #37003C; font-size: 13pt; font-weight: 850; }
+QFrame#OwnedHeader { background: #F4ECF6; border-radius: 5px; }
+QLabel#OwnedColumn { background: transparent; color: #725A76; font-size: 8pt; font-weight: 800; }
+QFrame#OwnedRow { background: transparent; border: 0; border-bottom: 1px solid #EEE8EF; }
+QLabel#OwnedPosition { background: transparent; color: #725A76; font-size: 8pt; font-weight: 800; }
+QLabel#OwnedName { background: transparent; color: #251129; font-size: 9pt; font-weight: 700; }
+QLabel#OwnedPrice { background: transparent; color: #5F4963; font-size: 8.5pt; font-weight: 650; }
+QLabel#OwnedStatus { border-radius: 8px; padding: 2px 4px; font-size: 7.5pt; font-weight: 800; }
+QLabel#OwnedStatus[status="xi"] { background: #E9D9EB; color: #37003C; }
+QLabel#OwnedStatus[status="bench"] { background: #F1EEF2; color: #725A76; }
+QLabel#OwnedStatus[status="out"] { background: #FCE8EA; color: #A11A2B; }
+QFrame#XIContainer { background: #F4ECF6; border: 1px solid #D6BDD9; border-radius: 11px; }
+QPushButton#LineupMode:checked { background: #37003C; color: white; border-color: #37003C; }
+QLabel#ModeLabel { background: transparent; color: #5F1A68; font-weight: 700; padding-right: 7px; }
+QFrame#TransferBar { background: #FFFFFF; border: 1px solid #D6BDD9; border-radius: 7px; }
+QFrame#TransferBar QLabel { background: transparent; color: #5F1A68; font-size: 8.5pt; font-weight: 700; }
+QFrame#PitchSurface { background: transparent; border: 0; }
+QWidget[pitchRow="true"] { background: transparent; }
+QFrame#XIPlayerCard, QFrame#BenchPlayerCard {
+    background: rgba(255,255,255,218); border: 1px solid rgba(255,255,255,235); border-radius: 9px;
+}
+QLabel#PlayerName { background: transparent; color: #37003C; font-size: 9pt; font-weight: 850; }
+QLabel#PlayerMeta { background: transparent; color: #725A76; font-size: 8pt; font-weight: 650; }
+QLabel#TransferIn { background: #E4F5EB; color: #116B3A; border-radius: 6px; font-size: 7.5pt; font-weight: 800; }
+QFrame#FixtureStrip { background: transparent; border: 0; }
+QFrame#FPLBenchPanel { background: #37003C; border: 0; border-radius: 10px; }
+QLabel#BenchTitle { background: transparent; color: white; font-size: 8pt; font-weight: 850; }
+QFrame#AnalysisHeader, QFrame#AnalysisActions, QFrame#AnalysisCard {
+    background: #FFFFFF; border: 1px solid #DED4E0; border-radius: 11px;
+}
+QLabel#SectionTitle, QLabel#AnalysisCardTitle { background: transparent; color: #37003C; font-size: 13pt; font-weight: 850; }
+QLabel#SectionSubtitle, QLabel#AnalysisCardBody, QLabel#AnalysisHint { background: transparent; color: #725A76; }
+QPlainTextEdit#AnalysisSummary { background: transparent; color: #4B3450; border: 0; padding: 0; font-family: "Segoe UI"; font-size: 9.5pt; }
+QScrollArea#TransferPlanCards, QScrollArea#DetailSummary { background: transparent; border: 0; }
+QWidget#TransferPlansContent, QWidget#DetailSummaryContent { background: transparent; }
+QLabel#TransferPlanPlaceholder { background: transparent; color: #725A76; padding: 16px; }
+QFrame#TransferPlanPrimary, QFrame#TransferPlanSecondary { background: #FFFFFF; border: 1px solid #E0D5E3; border-radius: 10px; }
+QFrame#TransferPlanPrimary { background: #FDF9FF; border: 1px solid #7B1FA2; }
+QLabel#PlanTitle { background: transparent; color: #37003C; font-size: 10.5pt; font-weight: 850; }
+QLabel#PlanSource { background: transparent; color: #725A76; font-size: 8.5pt; font-weight: 700; }
+QLabel#PlanTransferLabel { background: transparent; color: #725A76; font-size: 8pt; font-weight: 850; }
+QLabel#PlanTransferOut { background: transparent; color: #4C2D50; font-size: 9pt; font-weight: 700; }
+QLabel#PlanTransferIn { background: transparent; color: #116B3A; font-size: 9pt; font-weight: 800; }
+QLabel#PlanRoll { background: #F4ECF6; color: #5F1A68; border-radius: 7px; padding: 8px; font-weight: 850; }
+QFrame#PlanStats { background: #FCFAFC; border: 1px solid #EEE7F0; border-radius: 7px; }
+QFrame#PlanGain { background: #F4ECF6; border: 1px solid #E3D5E7; border-radius: 7px; }
+QLabel#PlanMetricKey, QLabel#PlanGainLabel { background: transparent; color: #725A76; font-size: 8.5pt; }
+QLabel#PlanMetricValue { background: transparent; color: #37003C; font-size: 8.5pt; font-weight: 750; }
+QLabel#PlanGainValue { background: transparent; color: #116B3A; font-size: 12pt; font-weight: 900; }
+QLabel#PlanFootnote { background: transparent; color: #5F1A68; font-size: 8.5pt; font-weight: 750; }
+QFrame#DetailRow { background: #FCFAFC; border: 1px solid #EEE7F0; border-radius: 7px; }
+QFrame#DetailHighlight { background: #F4ECF6; border: 1px solid #E3D5E7; border-radius: 7px; }
+QLabel#DetailKey { background: transparent; color: #725A76; font-size: 8.5pt; font-weight: 750; }
+QLabel#DetailValue { background: transparent; color: #37003C; font-size: 8.5pt; font-weight: 800; }
+QLabel#DetailNote { background: transparent; color: #5F1A68; font-size: 8.5pt; font-weight: 700; padding: 2px 3px; }
+QTableWidget#TransferTargets { background: #FFFFFF; color: #37003C; border: 1px solid #D6BDD9; border-radius: 8px; gridline-color: #E9E0EB; }
+QTableWidget#TransferTargets::item { padding: 6px 7px; border-bottom: 1px solid #EEE7F0; }
+QTableWidget#TransferTargets::item:alternate { background: #FAF7FB; }
+QHeaderView::section { background: #F4ECF6; color: #5F1A68; border: 0; border-bottom: 1px solid #D6BDD9; padding: 6px; font-weight: 800; }
+QDockWidget#SquadEditorDock { color: #37003C; font-weight: 800; }
+QDockWidget#SquadEditorDock::title { background: #F4ECF6; padding: 10px; border-bottom: 1px solid #D6BDD9; }
+QScrollArea#SquadEditorScroll, QWidget#SquadEditorContent { background: #FAF9FB; border: 0; }
+QFrame#DrawerActions { background: #FFFFFF; border-top: 1px solid #D6BDD9; }
+QPlainTextEdit { background: #211124; color: #F8F0F9; border: 1px solid #5F1A68; border-radius: 8px; padding: 8px; font-family: Consolas; }
+QProgressBar { min-height: 7px; max-height: 7px; border: 0; border-radius: 3px; background: #E8DFEA; }
+QProgressBar::chunk { border-radius: 3px; background: #5F1A68; }
+QCheckBox { spacing: 8px; background: transparent; }
+QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid #BBA7BE; border-radius: 4px; background: white; }
+QCheckBox::indicator:checked { background: #5F1A68; border-color: #5F1A68; }
+QStatusBar { background: #FFFFFF; color: #725A76; border-top: 1px solid #E2D8E4; }
+
+QScrollBar:vertical {
+    width: 9px; background: transparent; margin: 2px 0;
+}
+QScrollBar::handle:vertical {
+    min-height: 28px; background: #CDBDD0; border: 0; border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover { background: #A980AE; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0; background: transparent; border: 0;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+QScrollBar:horizontal {
+    height: 9px; background: transparent; margin: 0 2px;
+}
+QScrollBar::handle:horizontal {
+    min-width: 28px; background: #CDBDD0; border: 0; border-radius: 4px;
+}
+QScrollBar::handle:horizontal:hover { background: #A980AE; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0; background: transparent; border: 0;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
+
+QFrame#StepperField {
+    min-height: 34px; max-height: 34px;
+    background: #FFFFFF; border: 1px solid #CDBDD0; border-radius: 8px;
+}
+QLineEdit#StepperValue {
+    min-height: 32px; padding: 0 6px;
+    background: transparent; color: #251129; border: 0;
+}
+QToolButton#StepperButton {
+    min-width: 25px; max-width: 25px; min-height: 32px; max-height: 32px;
+    margin: 0; padding: 0; background: #F4ECF6; color: #37003C;
+    border: 0; border-left: 1px solid #D6BDD9; border-radius: 0;
+    font-size: 11pt; font-weight: 800;
+}
+QToolButton#StepperButton:hover { background: #E9D9EB; }
+QToolButton#StepperButton:disabled { background: #FAF9FB; color: #BDAFC0; }
+QToolButton#StepperButton[stepRole="increment"] {
+    border-top-right-radius: 7px; border-bottom-right-radius: 7px;
+}
+
+QComboBox { padding-left: 9px; padding-right: 28px; }
+QComboBox::drop-down {
+    subcontrol-origin: padding; subcontrol-position: top right; width: 24px;
+    background: #F4ECF6; border-left: 1px solid #D6BDD9;
+    border-top-right-radius: 7px; border-bottom-right-radius: 7px;
+}

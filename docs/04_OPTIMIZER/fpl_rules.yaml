@@ -1,0 +1,1030 @@
+version: 1
+
+competition: Fantasy Premier League
+season: "2026/27"
+
+description: >
+  Canonical Fantasy Premier League rules used by the squad, transfer,
+  lineup and chip optimization layers.
+
+  This file defines constraints and state transitions only.
+
+  FPL point-scoring rules belong in:
+  docs/03_SIMULATION/scoring_rules.yaml
+
+metadata:
+  rules_verified_for_season: "2026/27"
+  verified_at: "2026-09-07"
+  primary_authority: "Premier League / Fantasy Premier League"
+
+principles:
+  - "All season-specific FPL constraints must come from configuration."
+  - "Optimizer code must not hardcode squad, transfer or chip rules."
+  - "Historical backtests must load the rules applicable to the historical season."
+  - "Monetary calculations should use integer £0.1m units internally."
+  - "The official FPL API state takes precedence over reconstructed state when available."
+
+# =============================================================================
+# MONEY REPRESENTATION
+# =============================================================================
+
+money:
+
+  currency: GBP
+
+  display_unit_millions: true
+
+  internal_unit:
+    pounds_millions: 0.1
+    description: >
+      Store prices as integer tenths of £1m to avoid floating-point errors.
+
+  examples:
+    "4.0m": 40
+    "7.5m": 75
+    "15.5m": 155
+
+# =============================================================================
+# INITIAL SQUAD
+# =============================================================================
+
+initial_squad:
+
+  budget_millions: 100.0
+  budget_internal_units: 1000
+
+  squad_size: 15
+
+  position_counts:
+    goalkeeper: 2
+    defender: 5
+    midfielder: 5
+    forward: 3
+
+  maximum_players_per_club: 3
+
+  duplicate_player_allowed: false
+
+# =============================================================================
+# POSITION CODES
+# =============================================================================
+
+positions:
+
+  goalkeeper:
+    canonical_code: GK
+    squad_count: 2
+
+  defender:
+    canonical_code: DEF
+    squad_count: 5
+
+  midfielder:
+    canonical_code: MID
+    squad_count: 5
+
+  forward:
+    canonical_code: FWD
+    squad_count: 3
+
+# =============================================================================
+# STARTING XI
+# =============================================================================
+
+starting_xi:
+
+  total_players: 11
+
+  goalkeeper:
+    minimum: 1
+    maximum: 1
+
+  defender:
+    minimum: 3
+    maximum: 5
+
+  midfielder:
+    minimum: 2
+    maximum: 5
+
+  forward:
+    minimum: 1
+    maximum: 3
+
+  valid_formations:
+
+    - "3-4-3"
+    - "3-5-2"
+    - "4-3-3"
+    - "4-4-2"
+    - "4-5-1"
+    - "5-2-3"
+    - "5-3-2"
+    - "5-4-1"
+
+  rules:
+    - "Exactly one goalkeeper must start."
+    - "Only players in the 15-player squad may start."
+    - "Starting XI must contain exactly 11 players."
+
+# =============================================================================
+# BENCH
+# =============================================================================
+
+bench:
+
+  total_players: 4
+
+  goalkeeper_slots: 1
+  outfield_slots: 3
+
+  outfield_order:
+    ordered: true
+
+    positions:
+      - 1
+      - 2
+      - 3
+
+  goalkeeper_substitution:
+    starting_goalkeeper_must_play_zero_minutes: true
+
+# =============================================================================
+# AUTOMATIC SUBSTITUTIONS
+# =============================================================================
+
+automatic_substitutions:
+
+  enabled: true
+
+  zero_minutes_required_for_replacement: true
+
+  outfield_rules:
+
+    process_bench_in_order: true
+
+    preserve_valid_formation: true
+
+    description: >
+      If a starting outfield player records zero minutes, substitute the
+      highest-priority bench player whose inclusion creates a legal FPL formation.
+
+  goalkeeper_rules:
+
+    description: >
+      The substitute goalkeeper replaces the starting goalkeeper only when
+      the starting goalkeeper records zero minutes and the substitute
+      goalkeeper records playing time.
+
+  constraints_after_substitution:
+
+    goalkeeper:
+      exact: 1
+
+    defender:
+      minimum: 3
+
+    midfielder:
+      minimum: 2
+
+    forward:
+      minimum: 1
+
+# =============================================================================
+# CAPTAIN AND VICE-CAPTAIN
+# =============================================================================
+
+captaincy:
+
+  exactly_one_captain: true
+  exactly_one_vice_captain: true
+
+  captain_must_be_starting: true
+  vice_captain_must_be_starting: true
+
+  same_player_cannot_be_both: true
+
+  captain_multiplier: 2
+
+  fallback:
+
+    captain_zero_minutes:
+      transfer_multiplier_to_vice_captain: true
+
+    vice_captain_zero_minutes:
+      captain_multiplier_lost: true
+      transfer_to_another_player: false
+
+# =============================================================================
+# TRANSFERS
+# =============================================================================
+
+transfers:
+
+  before_first_deadline:
+    unlimited: true
+    hit_cost: 0
+
+  normal_gameweek:
+
+    free_transfers_granted_per_gameweek: 1
+
+    maximum_bankable_free_transfers: 5
+
+    points_cost_per_transfer_above_allowance: 4
+
+    maximum_regular_transfers_per_gameweek: 20
+
+    maximum_regular_transfers_exceptions:
+      - wildcard
+      - free_hit
+
+    transfer_in_requires_transfer_out: true
+
+    squad_size_must_remain_constant: true
+
+  roll_rule:
+
+    enabled: true
+
+    formula: >
+      FT available for a normal Gameweek is the previously retained FT state
+      plus the new Gameweek free transfer, capped at five.
+
+    cap: 5
+
+    burn_at_cap:
+      enabled: true
+
+      description: >
+        If the manager has five available free transfers and makes no transfer,
+        the following Gameweek still has five rather than six.
+
+  hit_rule:
+
+    points_per_paid_transfer: -4
+
+    formula: >
+      paid_transfers =
+      max(0, regular_transfers_made - free_transfers_available)
+
+    hit_points: >
+      -4 * paid_transfers
+
+  confirmed_transfer:
+
+    reversible: false
+
+    notes:
+      - >
+        Normal confirmed transfers cannot be individually reversed in FPL.
+      - >
+        Wildcard or Free Hit activation may remove the associated hit cost
+        according to chip rules.
+
+# =============================================================================
+# FREE TRANSFER STATE
+# =============================================================================
+
+free_transfer_state:
+
+  minimum: 1
+  maximum: 5
+
+  normal_transition:
+
+    description: >
+      After a normal Gameweek transfer decision, subtract the free transfers
+      consumed by regular transfers. At the next Gameweek, add one newly
+      awarded free transfer, capped at five.
+
+    conceptual_formula: >
+      next_ft =
+      min(
+        5,
+        max(0, current_ft - transfers_made) + 1
+      )
+
+    notes:
+      - >
+        The optimizer should use explicit state transitions rather than assign
+        an arbitrary point value to a free transfer.
+      - >
+        Paid transfers do not make the FT state negative.
+
+  wildcard_transition:
+
+    banked_transfers_retained: true
+
+    current_gameweek_granted_transfer_consumed_by_chip: true
+
+    next_gameweek_additional_transfer_from_chip_gameweek: false
+
+    description: >
+      Playing Wildcard retains free transfers that had already been banked
+      before the Gameweek. The normal free transfer granted for the chip
+      Gameweek is consumed as part of activating the chip.
+
+  free_hit_transition:
+
+    banked_transfers_retained: true
+
+    current_gameweek_granted_transfer_consumed_by_chip: true
+
+    next_gameweek_additional_transfer_from_chip_gameweek: false
+
+    description: >
+      Playing Free Hit retains previously banked free transfers. The normal
+      free transfer granted for the chip Gameweek is consumed by the chip.
+
+# =============================================================================
+# PLAYER PRICES
+# =============================================================================
+
+prices:
+
+  purchase_price:
+    description: >
+      Price paid when the player entered the manager's persistent squad.
+
+  current_price:
+    description: >
+      Current FPL purchase price for managers buying the player now.
+
+  selling_price:
+    source_priority:
+      - official_current_team_state
+      - derive_from_purchase_and_current_price
+
+  sell_on_profit:
+
+    enabled: true
+
+    manager_keeps_fraction_of_price_rise: 0.5
+
+    rounding:
+      direction: down
+      increment_millions: 0.1
+
+  selling_price_formula:
+
+    when_current_price_less_than_or_equal_purchase_price: >
+      selling_price = current_price
+
+    when_current_price_above_purchase_price: >
+      selling_price =
+      purchase_price
+      +
+      floor((current_price - purchase_price) / 0.2) * 0.1
+
+  examples:
+
+    example_1:
+      purchase_price: 7.5
+      current_price: 7.8
+      selling_price: 7.6
+
+    example_2:
+      purchase_price: 5.0
+      current_price: 5.1
+      selling_price: 5.0
+
+    example_3:
+      purchase_price: 5.0
+      current_price: 5.4
+      selling_price: 5.2
+
+    example_4:
+      purchase_price: 7.5
+      current_price: 7.3
+      selling_price: 7.3
+
+# =============================================================================
+# TRANSFER AFFORDABILITY
+# =============================================================================
+
+budget:
+
+  bank_must_be_non_negative: true
+
+  transfer_calculation: >
+
+    available_funds =
+    bank_before
+    +
+    sum(selling_price[player_out])
+
+    bank_after =
+    available_funds
+    -
+    sum(current_price[player_in])
+
+  constraint:
+    bank_after_minimum: 0
+
+  rules:
+    - "Use selling price for owned outgoing players."
+    - "Use current purchase price for incoming players."
+    - "Do not use squad market value as spendable cash."
+
+# =============================================================================
+# CHIPS
+# =============================================================================
+
+chips:
+
+  maximum_active_per_gameweek: 1
+
+  types:
+    - wildcard
+    - free_hit
+    - bench_boost
+    - triple_captain
+
+  total_per_season:
+    wildcard: 2
+    free_hit: 2
+    bench_boost: 2
+    triple_captain: 2
+
+  total_chip_uses_available: 8
+
+# =============================================================================
+# CHIP PERIODS
+# =============================================================================
+
+chip_periods:
+
+  first_half:
+
+    id: H1
+
+    gameweeks:
+      from: 1
+      through: 19
+
+    expiration:
+      after_gameweek_19_deadline: true
+
+    carry_unused_into_second_half: false
+
+    available:
+      wildcard: 1
+      free_hit: 1
+      bench_boost: 1
+      triple_captain: 1
+
+  second_half:
+
+    id: H2
+
+    gameweeks:
+      from: 20
+      through: 38
+
+    available:
+      wildcard: 1
+      free_hit: 1
+      bench_boost: 1
+      triple_captain: 1
+
+  rules:
+    - >
+      An unused first-half chip expires at the Gameweek 19 deadline.
+    - >
+      First-half chips do not carry into the second half.
+    - >
+      The second set becomes available after the Gameweek 19 deadline.
+
+# =============================================================================
+# WILDCARD
+# =============================================================================
+
+wildcard:
+
+  transfer_limit:
+    unlimited: true
+
+  transfer_hit_cost: 0
+
+  squad_change:
+    temporary: false
+    permanent: true
+
+  activation:
+
+    gameweek_1_allowed: false
+
+    cancellable_after_active_confirmation: false
+
+  squad_constraints_still_apply:
+    squad_size: true
+    positions: true
+    budget: true
+    maximum_players_per_club: true
+
+  transfer_behavior:
+
+    all_transfers_in_active_gameweek_free: true
+
+    previously_confirmed_transfers_in_same_gameweek_become_free: true
+
+    saved_ft_retained: true
+
+  free_transfer_state:
+    use_rule: wildcard_transition
+
+# =============================================================================
+# FREE HIT
+# =============================================================================
+
+free_hit:
+
+  transfer_limit:
+    unlimited: true
+
+  transfer_hit_cost: 0
+
+  squad_change:
+    temporary: true
+    duration_gameweeks: 1
+
+  activation:
+
+    gameweek_1_allowed: false
+
+    consecutive_gameweeks_allowed: false
+
+    cancellable_after_confirmation: false
+
+  squad_constraints_still_apply:
+    squad_size: true
+    positions: true
+    budget: true
+    maximum_players_per_club: true
+
+  persistent_state:
+
+    restore_original_squad_next_deadline: true
+    restore_original_bank_next_deadline: true
+
+    original_player_price_changes_during_free_hit:
+      reflected_on_return: true
+
+    temporary_free_hit_player_price_profit:
+      retained: false
+
+    temporary_bank_changes:
+      retained: false
+
+  transfer_behavior:
+
+    all_transfers_in_active_gameweek_free: true
+
+    previously_confirmed_transfers_in_same_gameweek_replaced_by_free_hit_state: true
+
+    saved_ft_retained: true
+
+  free_transfer_state:
+    use_rule: free_hit_transition
+
+  cross_period_rule:
+
+    free_hit_in_gw19:
+      free_hit_in_gw20_allowed: false
+
+      earliest_second_free_hit:
+        gameweek: 21
+
+# =============================================================================
+# BENCH BOOST
+# =============================================================================
+
+bench_boost:
+
+  transfer_behavior:
+    transfers_remain_normal: true
+
+  squad_change:
+    none: true
+
+  scoring_effect:
+
+    all_15_players_score: true
+
+    bench_points_included: true
+
+    normal_outfield_autosub_relevance_for_point_inclusion: false
+
+  captaincy:
+    normal_captain_rules_apply: true
+
+  cancellation:
+    before_deadline_allowed: true
+
+# =============================================================================
+# TRIPLE CAPTAIN
+# =============================================================================
+
+triple_captain:
+
+  transfer_behavior:
+    transfers_remain_normal: true
+
+  squad_change:
+    none: true
+
+  captain_multiplier: 3
+
+  vice_captain_fallback:
+
+    enabled: true
+
+    if_captain_zero_minutes:
+      vice_captain_receives_multiplier: 3
+
+    if_both_zero_minutes:
+      multiplier_lost: true
+      chip_returned: false
+
+  double_gameweek:
+    multiplier_applies_to_total_captain_gameweek_points: true
+
+  cancellation:
+    before_deadline_allowed: true
+
+# =============================================================================
+# CHIP MUTUAL EXCLUSIVITY
+# =============================================================================
+
+chip_constraints:
+
+  maximum_per_gameweek: 1
+
+  forbidden_combinations_same_gameweek:
+
+    - [wildcard, bench_boost]
+    - [wildcard, triple_captain]
+    - [wildcard, free_hit]
+
+    - [free_hit, bench_boost]
+    - [free_hit, triple_captain]
+
+    - [bench_boost, triple_captain]
+
+# =============================================================================
+# DOUBLE GAMEWEEKS
+# =============================================================================
+
+double_gameweek:
+
+  player_gameweek_score:
+    aggregate_fixture_scores: true
+
+  captain:
+    multiplier_applies_to_aggregated_gameweek_score: true
+
+  automatic_substitution:
+
+    zero_minutes_definition: >
+      A player is considered to have played in the Gameweek if they record
+      playing time in at least one fixture.
+
+    substitute_only_if_zero_minutes_across_all_fixtures: true
+
+# =============================================================================
+# BLANK GAMEWEEKS
+# =============================================================================
+
+blank_gameweek:
+
+  player_with_no_fixture:
+    fixture_points: 0
+
+  optimizer:
+    may_bench_player: true
+    may_transfer_player: true
+    may_use_free_hit: true
+
+# =============================================================================
+# LATE JOINING
+# =============================================================================
+
+late_joining:
+
+  before_manager_first_deadline:
+    transfers_free: true
+
+  starting_squad_rules:
+    standard_squad_constraints_apply: true
+
+# =============================================================================
+# CLUB CHANGES
+# =============================================================================
+
+player_club_change:
+
+  canonical_club_for_new_transfer:
+    use_current_fpl_team: true
+
+  validation:
+    use_official_fpl_state: true
+
+  notes:
+    - >
+      Rare edge cases caused by real-world transfers between Premier League
+      clubs should follow the official FPL squad validity state rather than
+      assumptions reconstructed from historical club IDs.
+
+# =============================================================================
+# GAMEWEEK STATE
+# =============================================================================
+
+gameweek_state:
+
+  required_fields:
+
+    - gameweek
+    - deadline_time
+
+    - squad
+
+    - purchase_prices
+    - selling_prices
+    - current_prices
+
+    - bank
+
+    - free_transfers
+
+    - wildcard_first_half_available
+    - wildcard_second_half_available
+
+    - free_hit_first_half_available
+    - free_hit_second_half_available
+
+    - bench_boost_first_half_available
+    - bench_boost_second_half_available
+
+    - triple_captain_first_half_available
+    - triple_captain_second_half_available
+
+    - chip_active
+
+# =============================================================================
+# CANONICAL OPTIMIZER CONSTRAINTS
+# =============================================================================
+
+optimizer_constraints:
+
+  squad:
+
+    total: 15
+
+    exact_positions:
+      GK: 2
+      DEF: 5
+      MID: 5
+      FWD: 3
+
+    maximum_per_club: 3
+
+  lineup:
+
+    total: 11
+
+    exact_GK: 1
+
+    minimum_DEF: 3
+    maximum_DEF: 5
+
+    minimum_MID: 2
+    maximum_MID: 5
+
+    minimum_FWD: 1
+    maximum_FWD: 3
+
+  captain:
+
+    total: 1
+    must_start: true
+
+  vice_captain:
+
+    total: 1
+    must_start: true
+    cannot_equal_captain: true
+
+  finances:
+
+    bank_after_moves_minimum: 0
+
+  chips:
+
+    maximum_active: 1
+
+# =============================================================================
+# ACTION TYPES
+# =============================================================================
+
+optimizer_action_types:
+
+  - ROLL_FT
+  - TRANSFER
+  - MULTI_TRANSFER
+  - HIT
+  - WILDCARD
+  - FREE_HIT
+  - BENCH_BOOST
+  - TRIPLE_CAPTAIN
+  - NO_ACTION_REQUIRED
+
+# =============================================================================
+# RULE VALIDATION
+# =============================================================================
+
+required_validation_before_optimization:
+
+  - squad_size_valid
+  - position_counts_valid
+  - club_limit_valid
+  - player_ids_unique
+  - prices_available
+  - selling_prices_available
+  - bank_non_negative
+  - free_transfer_state_valid
+  - chip_state_valid
+  - current_gameweek_valid
+
+failure_policy:
+  auto_repair_invalid_user_state: false
+  fail_explicitly: true
+
+# =============================================================================
+# REQUIRED TESTS
+# =============================================================================
+
+required_tests:
+
+  squad:
+
+    - "15-player squad is valid."
+    - "14-player squad is invalid."
+    - "16-player squad is invalid."
+
+    - "2 GK / 5 DEF / 5 MID / 3 FWD is valid."
+    - "Wrong positional composition is invalid."
+
+    - "3 players from one club is valid."
+    - "4 players from one club is invalid unless official state explicitly permits an edge case."
+
+  starting_xi:
+
+    - "Starting XI contains exactly 11 players."
+    - "Exactly one GK starts."
+    - "At least 3 DEF start."
+    - "At least 2 MID start."
+    - "At least 1 FWD starts."
+
+    - "3-4-3 is valid."
+    - "3-5-2 is valid."
+    - "4-3-3 is valid."
+    - "4-4-2 is valid."
+    - "4-5-1 is valid."
+    - "5-2-3 is valid."
+    - "5-3-2 is valid."
+    - "5-4-1 is valid."
+
+    - "2-5-3 is invalid."
+    - "5-5-0 is invalid."
+
+  free_transfers:
+
+    - "1 FT rolled -> 2 FT."
+    - "2 FT rolled -> 3 FT."
+    - "4 FT rolled -> 5 FT."
+    - "5 FT rolled -> remains 5 FT."
+
+    - "Maximum stored FT is 5."
+
+    - "Transfer above FT allowance costs 4 points."
+
+  wildcard:
+
+    - "Wildcard permits unlimited transfers."
+    - "Wildcard removes transfer hit cost."
+    - "Wildcard produces a permanent squad."
+    - "Wildcard retains previously banked FT."
+    - "Wildcard cannot be used in GW1."
+
+  free_hit:
+
+    - "Free Hit permits unlimited transfers."
+    - "Free Hit squad is temporary."
+    - "Original squad is restored next deadline."
+    - "Original bank is restored next deadline."
+    - "Temporary price profit is not retained."
+    - "Previously banked FT are retained."
+    - "Free Hit cannot be used in GW1."
+    - "Free Hit cannot be used in consecutive Gameweeks."
+    - "FH GW19 prevents FH GW20."
+
+  chips:
+
+    - "Only one chip may be active per Gameweek."
+    - "First-half unused chips expire after the GW19 deadline."
+    - "Second chip set starts after GW19 deadline."
+
+  bench_boost:
+
+    - "All 15 squad players score during Bench Boost."
+
+  triple_captain:
+
+    - "Captain receives 3x multiplier."
+    - "If captain DNP, vice receives 3x."
+    - "If captain and vice both DNP, TC multiplier is lost."
+
+  prices:
+
+    - "PP 7.5, CP 7.8 -> SP 7.6."
+    - "PP 5.0, CP 5.1 -> SP 5.0."
+    - "PP 5.0, CP 5.4 -> SP 5.2."
+    - "PP 7.5, CP 7.3 -> SP 7.3."
+
+  autosubs:
+
+    - >
+      "An outfield bench player cannot autosub in if the resulting formation
+      violates the minimum defender/forward requirements."
+
+    - >
+      "Backup GK replaces starting GK only if the starter records zero minutes."
+
+  captaincy:
+
+    - "Captain must be in starting XI."
+    - "Vice-captain must be in starting XI."
+    - "Captain and vice-captain must differ."
+
+# =============================================================================
+# HISTORICAL VERSIONING
+# =============================================================================
+
+historical_rules:
+
+  required: true
+
+  recommended_directory:
+    "docs/04_OPTIMIZER/fpl_rules/"
+
+  recommended_files:
+
+    - "2025_26.yaml"
+    - "2026_27.yaml"
+
+  rule: >
+    Historical optimizer backtests must use the exact FPL constraints and
+    chip/transfer mechanics valid in the corresponding season.
+
+# =============================================================================
+# ACCEPTANCE CRITERIA
+# =============================================================================
+
+acceptance_criteria:
+
+  - "Squad constraints are fully configuration-driven."
+  - "Starting XI constraints are fully configuration-driven."
+  - "Maximum three players per club is enforced."
+  - "Budget uses correct selling prices."
+  - "Price calculations avoid floating-point errors."
+  - "Up to five free transfers can be banked."
+  - "Burning a transfer at the five-FT cap is represented."
+  - "Additional transfers cost four points each."
+  - "Regular non-chip transfer cap is represented."
+  - "Wildcard is unlimited and permanent."
+  - "Free Hit is unlimited and temporary."
+  - "Wildcard and Free Hit retain previously banked transfers."
+  - "Chip-Gameweek FT transition is represented explicitly."
+  - "Free Hit cannot be played in GW1."
+  - "Free Hit cannot be played in consecutive Gameweeks."
+  - "Two chip sets are represented."
+  - "First-half chips expire after GW19."
+  - "Only one chip may be used in a Gameweek."
+  - "Bench Boost includes bench points."
+  - "Triple Captain supports vice-captain fallback."
+  - "Autosub formation legality is represented."
+  - "Double Gameweek behavior is represented."
+  - "Historical seasons can load different rule files."
+  - "No optimizer implementation needs hardcoded 2026/27 constants."
+
+# =============================================================================
+# FINAL RULE
+# =============================================================================
+
+final_rule: >
+  The official Fantasy Premier League state is authoritative.
+
+  If the canonical local state conflicts with official current FPL state,
+  stop optimization, report the discrepancy, refresh the relevant data,
+  and do not silently repair or guess the user's squad state.

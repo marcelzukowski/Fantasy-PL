@@ -1,0 +1,4 @@
+[
+  {"id": 100, "event": 5, "team_h": 1, "team_a": 2, "future_field": "preserved"},
+  {"id": 101, "event": null, "team_h": 2, "team_a": 1}
+]

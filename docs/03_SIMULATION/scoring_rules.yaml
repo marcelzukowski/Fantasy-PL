@@ -1,0 +1,867 @@
+version: 1
+
+competition: Fantasy Premier League
+season: "2026/27"
+
+description: >
+  Season-specific Fantasy Premier League scoring configuration.
+  Predictive football models must never hardcode FPL scoring values.
+  All simulated football events are converted into Fantasy points
+  through this configuration.
+
+metadata:
+  rules_verified_for_season: "2026/27"
+  verified_at: "2026-09-07"
+  primary_authority: "Premier League / Fantasy Premier League"
+  scoring_engine_version_required: true
+
+  principles:
+    - "Football event prediction and FPL scoring are separate layers."
+    - "All scoring changes between seasons must be handled through configuration."
+    - "Do not hardcode position-specific point values in predictive models."
+    - "Defensive contribution points are capped per player per fixture."
+    - "Bonus points are fixture-relative."
+    - "Stoppage time does not count toward the FPL 60-minute appearance threshold."
+
+# =============================================================================
+# POSITION TAXONOMY
+# =============================================================================
+
+positions:
+
+  goalkeeper:
+    code: GK
+
+  defender:
+    code: DEF
+
+  midfielder:
+    code: MID
+
+  forward:
+    code: FWD
+
+# =============================================================================
+# APPEARANCE POINTS
+# =============================================================================
+
+appearance:
+
+  did_not_play:
+    min_minutes: 0
+    max_minutes: 0
+    points: 0
+
+  played_under_60:
+    min_minutes: 1
+    max_minutes: 59
+    points: 1
+
+  played_60_or_more:
+    min_minutes: 60
+    points: 2
+
+  rules:
+    stoppage_time_counts_toward_60_threshold: false
+
+# =============================================================================
+# GOAL POINTS
+# =============================================================================
+
+goals:
+
+  goalkeeper:
+    points_per_goal: 10
+
+  defender:
+    points_per_goal: 6
+
+  midfielder:
+    points_per_goal: 5
+
+  forward:
+    points_per_goal: 4
+
+# =============================================================================
+# ASSISTS
+# =============================================================================
+
+assists:
+
+  points_per_assist: 3
+
+  attribution:
+    final_pass_or_touch_before_goal: true
+
+    defensive_deflection:
+      may_still_award_assist: true
+      notes:
+        - >
+          An assist may remain valid after one defensive touch when the
+          FPL assist rules consider the original pass/touch sufficiently intact.
+        - >
+          Exact attribution should use official FPL data when available.
+        - >
+          Simulation may use a calibrated probabilistic FPL-assist conversion
+          when detailed event information is insufficient.
+
+    rebound:
+      enabled: true
+      qualifying_previous_actions:
+        - shot_saved
+        - shot_blocked
+        - shot_hits_woodwork
+
+    forced_own_goal:
+      assist_awarded_to_attacking_player: true
+
+    penalty_or_free_kick_won:
+      assist_if_directly_scored: true
+      taker_cannot_assist_self: true
+
+    possession_lost_then_regained:
+      assist_awarded: false
+
+  simulation_rule: >
+    Official-assist modelling and FPL-assist attribution must remain distinct
+    when the underlying data permits it.
+
+# =============================================================================
+# CLEAN SHEETS
+# =============================================================================
+
+clean_sheets:
+
+  minimum_minutes: 60
+  stoppage_time_counts_toward_minimum: false
+
+  points:
+
+    goalkeeper: 4
+    defender: 4
+    midfielder: 1
+    forward: 0
+
+  eligibility:
+    must_play_minimum_minutes: true
+    must_concede_zero_while_on_pitch: true
+
+  substitution_rule:
+    retain_clean_sheet_if_substituted_before_later_goal: true
+
+  rules:
+    - >
+      A player who has played at least 60 minutes may retain clean-sheet
+      points if substituted before the team subsequently concedes.
+    - >
+      Goals conceded before the player enters the pitch do not count against
+      that player's clean-sheet eligibility.
+
+# =============================================================================
+# GOALS CONCEDED
+# =============================================================================
+
+goals_conceded:
+
+  applicable_positions:
+    - goalkeeper
+    - defender
+
+  goals_per_deduction: 2
+  points_per_deduction: -1
+
+  calculation:
+    type: floor_groups
+    formula_description: >
+      Deduct one point for every complete group of two goals conceded
+      while the player is subject to goals-conceded scoring.
+
+  substitution_rule:
+    count_only_goals_conceded_while_on_pitch: true
+
+  red_card_exception:
+    enabled: true
+    continue_counting_team_goals_after_red_card: true
+
+  examples:
+    goals_conceded_0: 0
+    goals_conceded_1: 0
+    goals_conceded_2: -1
+    goals_conceded_3: -1
+    goals_conceded_4: -2
+    goals_conceded_5: -2
+    goals_conceded_6: -3
+
+# =============================================================================
+# GOALKEEPER SAVES
+# =============================================================================
+
+goalkeeper_saves:
+
+  saves_per_point: 3
+  points_per_group: 1
+
+  calculation:
+    type: floor_groups
+
+  examples:
+    saves_0_2: 0
+    saves_3_5: 1
+    saves_6_8: 2
+    saves_9_11: 3
+
+# =============================================================================
+# PENALTY SAVES
+# =============================================================================
+
+penalty_saves:
+
+  goalkeeper_only: true
+  points_per_penalty_save: 5
+
+  rules:
+    - "Penalty-save points are separate from ordinary save points."
+
+# =============================================================================
+# PENALTY MISSES
+# =============================================================================
+
+penalty_misses:
+
+  points_per_miss: -2
+
+  applies_to:
+    - goalkeeper
+    - defender
+    - midfielder
+    - forward
+
+# =============================================================================
+# CARDS
+# =============================================================================
+
+cards:
+
+  yellow:
+    points: -1
+
+  red:
+    points: -3
+
+    goals_conceded_rule:
+      continue_to_penalize_after_dismissal: true
+
+  rules:
+    - >
+      Card scoring is applied in addition to any other points earned or lost
+      in the fixture.
+
+# =============================================================================
+# OWN GOALS
+# =============================================================================
+
+own_goals:
+
+  points_per_own_goal: -2
+
+# =============================================================================
+# DEFENSIVE CONTRIBUTION POINTS
+# =============================================================================
+
+defensive_contributions:
+
+  enabled: true
+
+  maximum_points_per_player_per_fixture: 2
+  stacking: false
+
+  goalkeeper:
+    eligible: false
+
+  defender:
+
+    eligible: true
+    threshold: 10
+    points: 2
+
+    counted_actions:
+      - clearances
+      - blocked_shots
+      - interceptions
+      - tackles
+
+    canonical_metric_name: CBIT
+
+  midfielder:
+
+    eligible: true
+    threshold: 12
+    points: 2
+
+    counted_actions:
+      - clearances
+      - blocked_shots
+      - interceptions
+      - recoveries
+      - tackles
+
+    canonical_metric_name: CBIRT
+
+  forward:
+
+    eligible: true
+    threshold: 12
+    points: 2
+
+    counted_actions:
+      - clearances
+      - blocked_shots
+      - interceptions
+      - recoveries
+      - tackles
+
+    canonical_metric_name: CBIRT
+
+  examples:
+
+    defender_9:
+      contributions: 9
+      points: 0
+
+    defender_10:
+      contributions: 10
+      points: 2
+
+    defender_20:
+      contributions: 20
+      points: 2
+
+    midfielder_11:
+      contributions: 11
+      points: 0
+
+    midfielder_12:
+      contributions: 12
+      points: 2
+
+    midfielder_24:
+      contributions: 24
+      points: 2
+
+# =============================================================================
+# BONUS POINTS
+# =============================================================================
+
+bonus_points:
+
+  enabled: true
+
+  allocation:
+
+    standard:
+      first: 3
+      second: 2
+      third: 1
+
+    tie_for_first:
+      first_tied_players: 3
+      next_distinct_rank: 1
+
+      example:
+        bps:
+          player_a: 40
+          player_b: 40
+          player_c: 35
+
+        bonus:
+          player_a: 3
+          player_b: 3
+          player_c: 1
+
+    tie_for_second:
+      first: 3
+      second_tied_players: 2
+
+      example:
+        bps:
+          player_a: 40
+          player_b: 35
+          player_c: 35
+
+        bonus:
+          player_a: 3
+          player_b: 2
+          player_c: 2
+
+    tie_for_third:
+      first: 3
+      second: 2
+      third_tied_players: 1
+
+      example:
+        bps:
+          player_a: 40
+          player_b: 35
+          player_c: 30
+          player_d: 30
+
+        bonus:
+          player_a: 3
+          player_b: 2
+          player_c: 1
+          player_d: 1
+
+  rules:
+    - "Bonus is determined separately for every fixture."
+    - "More than three players may receive bonus because of ties."
+    - "BPS values may be revised during the official post-match review process."
+
+# =============================================================================
+# BONUS POINT SYSTEM — 2026/27
+# =============================================================================
+
+bps:
+
+  enabled: true
+
+  season: "2026/27"
+
+  description: >
+    Bonus Points System used to rank players within each fixture.
+    BPS actions are cumulative unless explicitly stated otherwise.
+
+  appearance:
+
+    minutes_1_to_60:
+      bps: 3
+
+    over_60_minutes:
+      bps: 6
+
+  goals:
+
+    penalty_goal:
+      bps: 12
+      position_independent: true
+
+    non_penalty_goal:
+
+      goalkeeper:
+        bps: 12
+
+      defender:
+        bps: 12
+
+      midfielder:
+        bps: 18
+
+      forward:
+        bps: 24
+
+  assists:
+    bps_per_assist: 9
+
+  clean_sheet:
+
+    goalkeeper:
+      bps: 12
+
+    defender:
+      bps: 12
+
+    midfielder:
+      bps: 0
+
+    forward:
+      bps: 0
+
+  goalkeeper:
+
+    save:
+      bps_per_action: 2
+
+    save_from_inside_box:
+      additional_bps_per_action: 1
+
+    save_from_big_chance:
+      additional_bps_per_action: 1
+
+    penalty_save:
+      additional_bps_per_action: 7
+
+    notes:
+      - >
+        The save categories are cumulative where the same event satisfies
+        multiple official BPS metrics.
+      - >
+        A penalty save is also a save and is treated as a big-chance save
+        under the 2026/27 structure.
+
+  attacking_actions:
+
+    successful_open_play_cross:
+      bps_per_action: 1
+
+    chance_created:
+      bps_per_action: 1
+
+    big_chance_created:
+      bps_per_action: 3
+
+    successful_dribble:
+      bps_per_action: 1
+
+    shot_on_target:
+      bps_per_action: 2
+
+    winning_goal:
+      bps_per_action: 3
+
+    foul_won:
+      bps_per_action: 1
+
+  defensive_actions:
+
+    clearances_blocks_interceptions:
+      group_size: 3
+      bps_per_complete_group: 1
+
+    recoveries:
+      group_size: 3
+      bps_per_complete_group: 1
+
+    successful_tackle:
+      bps_per_action: 2
+
+    goal_line_clearance:
+      bps_per_action: 9
+
+  passing:
+
+    minimum_passes_attempted_for_completion_bonus: 30
+
+    completion_70_to_79_percent:
+      bps: 2
+
+    completion_80_to_89_percent:
+      bps: 4
+
+    completion_90_plus_percent:
+      bps: 6
+
+  negative_actions:
+
+    goalkeeper_or_defender_concedes_goal:
+      bps_per_goal: -4
+
+    penalty_conceded:
+      bps_per_action: -3
+
+    penalty_missed:
+      bps_per_action: -6
+
+    yellow_card:
+      bps_per_action: -3
+
+    red_card:
+      bps_per_action: -9
+
+    own_goal:
+      bps_per_action: -6
+
+    big_chance_missed:
+      bps_per_action: -3
+
+    error_leading_to_goal:
+      bps_per_action: -3
+
+    error_leading_to_attempt:
+      bps_per_action: -1
+
+    foul_conceded:
+      bps_per_action: -1
+
+    offside:
+      bps_per_action: -1
+
+    shot_off_target:
+      bps_per_action: -1
+
+  removed_for_2026_27:
+
+    being_tackled:
+      previous_bps_per_action: -1
+      current_bps_per_action: 0
+      enabled: false
+
+  changes_from_2025_26:
+
+    clearances_blocks_interceptions:
+      previous_group_size: 2
+      current_group_size: 3
+
+    goalkeeper_save_structure:
+      changed: true
+
+      previous:
+        inside_box_save_bps: 3
+        outside_box_save_bps: 2
+        penalty_save_bps: 8
+
+      current:
+        any_save_bps: 2
+        additional_inside_box_save_bps: 1
+        additional_big_chance_save_bps: 1
+        penalty_save_bps: 7
+
+    being_tackled_penalty:
+      removed: true
+
+# =============================================================================
+# CAPTAINCY MULTIPLIERS
+# =============================================================================
+
+captaincy:
+
+  normal_captain:
+    multiplier: 2
+
+  vice_captain:
+    multiplier_when_captain_does_not_play: 2
+
+  triple_captain:
+    multiplier: 3
+
+  rules:
+    - >
+      Captain multipliers are applied after the player's fixture/Gameweek
+      FPL points have been calculated.
+    - >
+      Do not rerun football simulation for captaincy.
+    - >
+      In a Double Gameweek, the multiplier applies to the player's total
+      Gameweek score across all fixtures.
+
+# =============================================================================
+# DOUBLE / BLANK GAMEWEEKS
+# =============================================================================
+
+gameweek_aggregation:
+
+  double_gameweek:
+    rule: sum_fixture_points
+
+  triple_gameweek:
+    rule: sum_fixture_points
+
+  blank_gameweek:
+    no_fixture_points: 0
+
+# =============================================================================
+# POINT CALCULATION ORDER
+# =============================================================================
+
+calculation_order:
+
+  - appearance_points
+  - goal_points
+  - assist_points
+  - clean_sheet_points
+  - save_points
+  - penalty_save_points
+  - defensive_contribution_points
+  - penalty_miss_points
+  - goals_conceded_points
+  - yellow_card_points
+  - red_card_points
+  - own_goal_points
+  - bonus_points
+
+# =============================================================================
+# PLAYER FIXTURE SCORING OUTPUT
+# =============================================================================
+
+required_scoring_breakdown:
+
+  - appearance_points
+  - goal_points
+  - assist_points
+  - clean_sheet_points
+  - save_points
+  - penalty_save_points
+  - defensive_contribution_points
+  - penalty_miss_points
+  - goals_conceded_points
+  - yellow_card_points
+  - red_card_points
+  - own_goal_points
+  - bonus_points
+  - total_points
+
+# =============================================================================
+# IMPLEMENTATION RULES
+# =============================================================================
+
+implementation_rules:
+
+  - >
+    Predictive models must output football events rather than position-specific
+    FPL points.
+
+  - >
+    The FPL Scoring Engine is the only component responsible for translating
+    football events into final Fantasy points.
+
+  - >
+    Scoring logic must select configuration according to season.
+
+  - >
+    Historical backtests must use the scoring rules that were valid in the
+    historical target season.
+
+  - >
+    A 2025/26 fixture must not be rescored using 2026/27 BPS rules unless the
+    experiment explicitly requests counterfactual scoring.
+
+  - >
+    Bonus should preferably be reconstructed from simulated BPS and fixture-level
+    ranking rather than predicted independently.
+
+  - >
+    If exact BPS reconstruction is impossible because source event data is
+    unavailable, the Bonus Model may provide simulated BPS values, but final
+    bonus allocation must still use the ranking and tie rules defined here.
+
+# =============================================================================
+# HISTORICAL VERSIONING
+# =============================================================================
+
+historical_scoring:
+
+  required: true
+
+  architecture:
+    recommended_directory: "docs/03_SIMULATION/scoring_rules/"
+
+    recommended_files:
+      - "2025_26.yaml"
+      - "2026_27.yaml"
+
+  rule: >
+    Every historical prediction must be evaluated using the scoring system
+    applicable to that season.
+
+# =============================================================================
+# OFFICIAL DATA FINALIZATION
+# =============================================================================
+
+official_review:
+
+  opta_review_can_change:
+    - bps
+    - bonus_points
+    - defensive_contributions
+    - underlying_match_statistics
+
+  gameweek_score_status:
+    before_lock: provisional
+    after_lock: final
+
+  season_2026_27_lock_rule:
+    description: >
+      Gameweek scores are finalized at 09:00 UK time on the day after
+      the final match of the Gameweek, subject to official review.
+
+# =============================================================================
+# VALIDATION TESTS
+# =============================================================================
+
+required_tests:
+
+  appearance:
+    - "0 minutes -> 0 appearance points"
+    - "1 minute -> 1 appearance point"
+    - "59 minutes -> 1 appearance point"
+    - "60 minutes -> 2 appearance points"
+    - "90 minutes -> 2 appearance points"
+
+  goals:
+    - "GK goal -> 10 points"
+    - "DEF goal -> 6 points"
+    - "MID goal -> 5 points"
+    - "FWD goal -> 4 points"
+
+  clean_sheet:
+    - "DEF 59 minutes + 0 conceded -> 0 CS points"
+    - "DEF 60 minutes + 0 conceded -> 4 CS points"
+    - "MID 60 minutes + 0 conceded -> 1 CS point"
+    - >
+      "DEF substituted after 60 at 0-0, later team concedes -> retains CS"
+
+  saves:
+    - "GK 2 saves -> 0 save points"
+    - "GK 3 saves -> 1 save point"
+    - "GK 6 saves -> 2 save points"
+
+  defensive_contributions:
+    - "DEF 9 CBIT -> 0 points"
+    - "DEF 10 CBIT -> 2 points"
+    - "DEF 20 CBIT -> still 2 points"
+    - "MID 11 CBIRT -> 0 points"
+    - "MID 12 CBIRT -> 2 points"
+    - "FWD 12 CBIRT -> 2 points"
+
+  goals_conceded:
+    - "DEF concedes 1 -> 0 points"
+    - "DEF concedes 2 -> -1 point"
+    - "DEF concedes 4 -> -2 points"
+
+  cards:
+    - "yellow -> -1 point"
+    - "red -> -3 points"
+
+  penalty:
+    - "penalty saved -> +5 FPL points"
+    - "penalty missed -> -2 FPL points"
+
+  own_goal:
+    - "own goal -> -2 points"
+
+  bonus:
+    - "single highest BPS -> 3 bonus"
+    - "single second BPS -> 2 bonus"
+    - "single third BPS -> 1 bonus"
+    - "tie first -> 3,3,1"
+    - "tie second -> 3,2,2"
+    - "tie third -> 3,2,1,1"
+
+  bps_2026_27:
+    - "being tackled -> 0 BPS"
+    - "3 CBI -> +1 BPS"
+    - "6 CBI -> +2 BPS"
+    - "one ordinary save -> +2 BPS"
+    - "inside-box save -> +3 cumulative BPS"
+    - "big-chance save -> +3 cumulative BPS before other qualifiers"
+    - >
+      "penalty save receives penalty-save BPS plus applicable save,
+      inside-box and big-chance BPS"
+
+# =============================================================================
+# ACCEPTANCE CRITERIA
+# =============================================================================
+
+acceptance_criteria:
+
+  - "2026/27 position-specific goal scoring is configurable."
+  - "Appearance threshold is implemented correctly."
+  - "Clean-sheet eligibility uses player minutes and on-pitch goal timing."
+  - "Goalkeeper save points use floor groups of three."
+  - "Defensive contribution thresholds are position-specific."
+  - "Defensive contribution points cannot stack beyond two per fixture."
+  - "Goals-conceded deductions are position-specific."
+  - "Red-card goals-conceded exception is represented."
+  - "2026/27 BPS changes are represented explicitly."
+  - "Bonus ties follow official FPL rules."
+  - "Captaincy is applied downstream from player scoring."
+  - "Historical seasons can use different scoring configurations."
+  - "No scoring values need to be hardcoded inside predictive model code."

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fpl-prediction-engine"
+version = "0.1.0"
+description = "Fantasy Premier League prediction and decision engine."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # Core runtime dependencies.
+    "pandas",
+    "polars",
+    "pyarrow",
+    "duckdb",
+    "pytz",
+    "numpy",
+    "scipy",
+    "scikit-learn",
+    "pydantic>=2.0",
+    "PyYAML",
+    "requests",
+    "httpx",
+    "tenacity",
+    # Modelling dependencies.
+    "catboost",
+    "statsmodels",
+]
+
+[project.optional-dependencies]
+optuna = ["optuna"]
+
+[dependency-groups]
+dev = ["pytest", "pytest-cov"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fpl_engine"]

@@ -1,0 +1,2196 @@
+"""PIPE-001..006 current-season materialization and V1 inference orchestration.
+
+Network I/O is owned by provider adapters.  This module consumes their exact,
+cached results, resolves canonical identities, executes the existing V1 model
+chain, and writes an auditable prediction bundle.  It never calls an FPL write
+endpoint or mutates an external account.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, fields, is_dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+import hashlib
+import json
+from pathlib import Path
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Protocol
+from uuid import NAMESPACE_URL, uuid5
+
+import yaml
+
+from fpl_engine.config.loader import load_scoring_rules_config
+from fpl_engine.data.database import CanonicalDatabase, CanonicalIntegrityError
+from fpl_engine.data.local_fpl_snapshots import (
+    LocalFPLSnapshotExistsError, LocalFPLSnapshotStore,
+)
+from fpl_engine.data.manual_context import load_manual_context
+from fpl_engine.data.market_odds import MarketQuote
+from fpl_engine.data.providers.api_football import APIFootballAdapter, APIFootballError
+from fpl_engine.data.providers.fpl_api import FPLApiError, FPLApiResult, OfficialFPLAdapter
+from fpl_engine.data.schemas.entities import (
+    Competition, Fixture, FixtureProviderMapping, IdentityStatus, MatchMethod,
+    Player, PlayerProviderMapping, PlayerTeamSpell, ReviewStatus, Team,
+    TeamProviderMapping,
+)
+from fpl_engine.data.identity import (
+    IdentityResolutionError, official_fpl_player_identity_key,
+)
+from fpl_engine.features.minutes_dataset import MinutesObservation
+from fpl_engine.features.player_talent_dataset import PlayerPerformanceObservation
+from fpl_engine.features.tactical_context import (
+    AvailabilityRecord, RoleRecord, SetPieceRecord, SetPieceType, SquadRoleRecord,
+    TacticalContextEngine,
+)
+from fpl_engine.features.tactical_roles import TacticalRole
+from fpl_engine.models.events import EventModels, EventModelsV2, PlayerFixtureInput
+from fpl_engine.models.events.goal_allocation_v2 import GoalAllocationEventModels
+from fpl_engine.models.player_talent.goal_allocation_history import (
+    GoalAllocationPlayerRef,
+    build_strict_goal_allocation_proxy,
+)
+from fpl_engine.models.events.market_shadow import build_market_shadow_report
+from fpl_engine.models.minutes import MinutesContext, MinutesFeatureSignal, MinutesModel
+from fpl_engine.models.minutes.v2 import HurdleTimeDecayMinutesModel
+from fpl_engine.models.minutes.calibration import load_minutes_calibration
+from fpl_engine.models.player_talent import PlayerTalentModel, PlayerTalentV2
+from fpl_engine.models.projections import FixtureProjectionInput, PlayerProjection, ProjectionBuilder, ProjectionStore
+from fpl_engine.models.team_strength import MatchObservation, TeamStrengthModel
+from fpl_engine.optimizer import OptimizerRules, SquadPlayer
+from fpl_engine.scoring import FPLScoringEngine
+from fpl_engine.shadow import run_shadow
+from fpl_engine.simulation import FixtureSimulator, SimulationConfig
+from fpl_engine.simulation.v2 import FixtureSimulatorV2
+from fpl_engine.simulation.v21 import FixtureSimulatorV21
+from fpl_engine.simulation.v22 import FixtureSimulatorV22
+from fpl_engine.types import PredictionContext
+from fpl_engine.validation.leakage import assert_information_known, assert_snapshot_before
+
+
+CURRENT_PIPELINE_VERSION = "current_pipeline_v1"
+COMPETITION_NAME = "Premier League"
+POSITION_CODES = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+
+
+class CurrentPipelineError(RuntimeError):
+    """Base failure for a current prediction run."""
+
+
+class CurrentSourceError(CurrentPipelineError):
+    """A required current source is unavailable or temporally unsafe."""
+
+
+class CurrentIdentityError(CurrentPipelineError):
+    """A critical current entity cannot be resolved without an unsafe match."""
+
+
+class CurrentInputError(CurrentPipelineError):
+    """A requested season, Gameweek, rule set or squad input is incompatible."""
+
+
+def _utc(value: datetime, name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise CurrentInputError(f"{name} must be an aware datetime")
+    return value.astimezone(timezone.utc)
+
+
+def _canonical_id(kind: str, description: str) -> str:
+    return f"{kind}_{uuid5(NAMESPACE_URL, description.casefold().strip())}"
+
+
+def _season_start(season: str) -> datetime:
+    try:
+        year = int(season.split("/", 1)[0])
+    except (ValueError, IndexError) as exc:
+        raise CurrentInputError("season must use YYYY/YY") from exc
+    return datetime(year, 7, 1, tzinfo=timezone.utc)
+
+
+def _number(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _integer(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_time(value: object, name: str) -> datetime:
+    if isinstance(value, datetime):
+        return _utc(value, name)
+    if not isinstance(value, str):
+        raise CurrentInputError(f"{name} must be an ISO-8601 timestamp")
+    try:
+        return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")), name)
+    except ValueError as exc:
+        raise CurrentInputError(f"{name} must be an ISO-8601 timestamp") from exc
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, datetime):
+        return _utc(value, "timestamp").isoformat()
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value):
+        return {item.name: _jsonable(getattr(value, item.name)) for item in fields(value)}
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(_jsonable(value), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class CurrentSourceRecord:
+    source: str
+    entity: str
+    payload: object
+    known_at: datetime
+    retrieved_at: datetime
+    checksum: str
+    source_version: str
+    raw_snapshot_id: str | None = None
+    cache_key: str | None = None
+    from_cache: bool = False
+    source_snapshot_timestamp: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _utc(self.known_at, f"{self.source}.{self.entity}.known_at")
+        _utc(self.retrieved_at, f"{self.source}.{self.entity}.retrieved_at")
+        if self.source_snapshot_timestamp is not None:
+            _utc(
+                self.source_snapshot_timestamp,
+                f"{self.source}.{self.entity}.source_snapshot_timestamp",
+            )
+        if not self.source or not self.entity or not self.checksum or not self.source_version:
+            raise CurrentSourceError("source identity, entity, checksum and version are required")
+
+
+@dataclass(frozen=True)
+class CurrentSourceData:
+    bootstrap: CurrentSourceRecord
+    fixtures: CurrentSourceRecord
+    event_live: tuple[CurrentSourceRecord, ...] = ()
+    optional: tuple[CurrentSourceRecord, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+class CurrentDataSource(Protocol):
+    def refresh(self, context: PredictionContext) -> CurrentSourceData: ...
+
+
+def _provider_record(result: FPLApiResult, entity: str) -> CurrentSourceRecord:
+    raw = result.raw_snapshot
+    return CurrentSourceRecord(
+        source="official_fpl_api", entity=entity, payload=result.payload,
+        known_at=result.response.stored_at, retrieved_at=result.response.stored_at,
+        checksum=result.response.checksum, source_version=result.response.checksum,
+        raw_snapshot_id=raw.snapshot_id if raw is not None else None,
+        cache_key=result.response.cache_key, from_cache=result.from_cache,
+        source_snapshot_timestamp=result.response.stored_at,
+    )
+
+
+class OfficialCurrentDataSource:
+    """Current source composition over existing synchronous provider adapters."""
+
+    def __init__(
+        self, adapter: OfficialFPLAdapter, *,
+        local_snapshots: LocalFPLSnapshotStore | None = None,
+        api_football: APIFootballAdapter | None = None,
+        api_football_league_id: int | None = None,
+    ):
+        self.adapter = adapter
+        self.local_snapshots = local_snapshots
+        self.api_football = api_football
+        self.api_football_league_id = api_football_league_id
+
+    def refresh(self, context: PredictionContext) -> CurrentSourceData:
+        warnings: list[str] = []
+        try:
+            bootstrap_result = self.adapter.get_bootstrap_static()
+            fixtures_result = self.adapter.get_fixtures()
+        except FPLApiError as exc:
+            raise CurrentSourceError("Official FPL bootstrap and fixture schedule are required") from exc
+        bootstrap = _provider_record(bootstrap_result, "bootstrap_static")
+        fixtures = _provider_record(fixtures_result, "fixtures")
+        if self.local_snapshots is not None:
+            for name, result in (("bootstrap_static", bootstrap_result), ("fixtures", fixtures_result)):
+                if result.raw_snapshot is None:
+                    continue  # A cache hit must not create another RawStore snapshot.
+                try:
+                    self.local_snapshots.capture(
+                        name, result, snapshot_timestamp=result.response.stored_at,
+                    )
+                except LocalFPLSnapshotExistsError:
+                    warnings.append(f"Local {name} archive already exists at this prediction timestamp.")
+
+        live: list[CurrentSourceRecord] = []
+        for gameweek in range(1, context.target_gameweek):
+            try:
+                live.append(_provider_record(self.adapter.get_event_live(gameweek), f"event_live_{gameweek}"))
+            except FPLApiError as exc:
+                warnings.append(f"Official FPL event-live GW{gameweek} unavailable: {type(exc).__name__}.")
+
+        optional: list[CurrentSourceRecord] = []
+        if self.api_football is None and self.api_football_league_id is not None:
+            warnings.append(
+                "API-Football league configured but API_FOOTBALL_KEY is absent; optional enrichment skipped."
+            )
+        elif self.api_football is not None:
+            if self.api_football_league_id is None:
+                warnings.append("API-Football configured without a league ID; optional enrichment skipped.")
+            else:
+                try:
+                    result = self.api_football.get_injuries(
+                        league=self.api_football_league_id,
+                        season=int((context.target_season or "").split("/", 1)[0]),
+                    )
+                    body = result.response.body
+                    optional.append(CurrentSourceRecord(
+                        "api_football", "injuries", result.payload, result.retrieved_at,
+                        result.retrieved_at, hashlib.sha256(body).hexdigest(),
+                        result.response.checksum,
+                        result.raw_snapshot.snapshot_id if result.raw_snapshot else None,
+                        result.response.cache_key, result.from_cache,
+                    ))
+                except (APIFootballError, ValueError) as exc:
+                    warnings.append(f"API-Football injuries unavailable; V1 fallback retained: {type(exc).__name__}.")
+        return CurrentSourceData(bootstrap, fixtures, tuple(live), tuple(optional), tuple(warnings))
+
+
+@dataclass(frozen=True)
+class CurrentPlayer:
+    provider_id: str
+    player_id: str
+    provider_team_id: str
+    team_id: str
+    position: str
+    current_price: int
+    display_name: str
+    provider_payload: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class CurrentFixture:
+    provider_id: str
+    fixture_id: str
+    target_gameweek: int | None
+    home_provider_team_id: str
+    away_provider_team_id: str
+    home_team_id: str
+    away_team_id: str
+    kickoff: datetime | None
+    known_at: datetime
+    status: str
+    provider_payload: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class IdentityAudit:
+    provider_scope: str
+    created_players: tuple[str, ...]
+    reused_players: tuple[str, ...]
+    created_teams: tuple[str, ...]
+    reused_teams: tuple[str, ...]
+    created_fixtures: tuple[str, ...]
+    reused_fixtures: tuple[str, ...]
+    unresolved: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CurrentPipelineConfig:
+    canonical_database: Path
+    output_root: Path
+    simulations_per_fixture: int = 10_000
+    random_seed: int = 42
+    history_seasons: tuple[str, ...] = ("2024-25", "2025-26")
+    projection_horizon_gameweeks: int = 6
+    goal_allocation_proxy_enabled: bool = True
+    goal_allocation_source_season: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.simulations_per_fixture < 1 or self.random_seed < 0:
+            raise CurrentInputError("simulation count must be positive and seed non-negative")
+        if self.projection_horizon_gameweeks < 1:
+            raise CurrentInputError(
+                "projection_horizon_gameweeks must be positive"
+            )
+        if type(self.goal_allocation_proxy_enabled) is not bool:
+            raise CurrentInputError(
+                "goal_allocation_proxy_enabled "
+                "must be bool"
+            )
+        if (
+            self.goal_allocation_source_season
+            is not None
+            and (
+                not isinstance(
+                    self.goal_allocation_source_season,
+                    str,
+                )
+                or not self.goal_allocation_source_season.strip()
+            )
+        ):
+            raise CurrentInputError(
+                "goal_allocation_source_season "
+                "must be a non-empty season string"
+            )
+        if (
+            self.goal_allocation_proxy_enabled
+            and self.goal_allocation_source_season
+            is None
+            and not self.history_seasons
+        ):
+            raise CurrentInputError(
+                "goal-allocation promotion candidate "
+                "requires a prior STRICT season"
+            )
+
+
+@dataclass(frozen=True)
+class CurrentRunResult:
+    run_directory: Path
+    projections: tuple[PlayerProjection, ...]
+    candidate_pool: tuple[SquadPlayer, ...]
+    fixture_horizon: tuple[CurrentFixture, ...]
+    artifacts: Mapping[str, Path]
+    warnings: tuple[str, ...]
+    shadow_reports: tuple[Path, Path] | None
+    event_projections: tuple[object, ...]
+    current_players: tuple[CurrentPlayer, ...]
+    canonical_team_names: Mapping[str, str]
+
+
+class _IdentityMaterializer:
+    def __init__(self, database: CanonicalDatabase, context: PredictionContext):
+        self.db = database
+        self.context = context
+        self.at = context.prediction_timestamp
+        self.season = context.target_season or ""
+        self.scope = f"official_fpl_api:{self.season}"
+        self.effective_from = _season_start(self.season)
+        self.created = {"player": [], "team": [], "fixture": []}
+        self.reused = {"player": [], "team": [], "fixture": []}
+        self.unresolved: list[str] = []
+        self.team_names: dict[str, str] = {}
+        self.competition_id = _canonical_id("comp", COMPETITION_NAME)
+        if not self.db.connection.execute(
+            "SELECT 1 FROM dim_competition WHERE competition_id=?", [self.competition_id]
+        ).fetchone():
+            self.db.persist_competition(Competition(
+                competition_id=self.competition_id, canonical_name=COMPETITION_NAME,
+                country="England", created_at=self.at, updated_at=self.at,
+            ))
+
+    def _mapped(self, entity: str, provider_id: str) -> str | None:
+        table = f"dim_{entity}_provider_map"
+        column = f"{entity}_id"
+        rows = self.db.connection.execute(
+            f"SELECT {column} FROM {table} WHERE provider=? AND provider_id=? "
+            "AND review_status='confirmed' AND effective_from<=? "
+            "AND (effective_to IS NULL OR effective_to>=?) AND created_at<=?",
+            [self.scope, provider_id, self.at, self.at, self.at],
+        ).fetchall()
+        if len(rows) > 1:
+            raise CurrentIdentityError(f"Conflicting confirmed {entity} mapping for {provider_id}")
+        return rows[0][0] if rows else None
+
+    def teams(self, rows: list[Mapping[str, object]]) -> dict[str, str]:
+        output: dict[str, str] = {}
+        names: dict[str, str] = {}
+        for row in rows:
+            provider_id = str(row.get("id", ""))
+            name = str(row.get("name") or "").strip()
+            if not provider_id or not name:
+                self.unresolved.append(f"team:{provider_id or '<missing-id>'}:missing-name")
+                continue
+            mapped = self._mapped("team", provider_id)
+            if mapped is None:
+                mapped = _canonical_id("team", f"Premier League|{name.casefold()}")
+                collision = self.db.connection.execute(
+                    "SELECT canonical_name FROM dim_team WHERE team_id=?", [mapped]
+                ).fetchone()
+                if collision is None:
+                    self.db.persist_team(Team(
+                        team_id=mapped, canonical_name=name,
+                        short_name=str(row.get("short_name") or "") or None,
+                        country="England", created_at=self.at, updated_at=self.at,
+                    ))
+                self.db.persist_team_mapping(TeamProviderMapping(
+                    team_id=mapped, provider=self.scope, provider_id=provider_id,
+                    provider_name=name, effective_from=self.effective_from,
+                    match_method=MatchMethod.exact_external_id, match_confidence=1.0,
+                    review_status=ReviewStatus.confirmed, created_at=self.at,
+                    updated_at=self.at, source_record_id=provider_id, retrieved_at=self.at,
+                ))
+                self.created["team"].append(mapped)
+            else:
+                self.reused["team"].append(mapped)
+            output[provider_id] = mapped
+            names[provider_id] = name
+            self.team_names[provider_id] = name
+        return output
+
+    def players(
+        self, rows: list[Mapping[str, object]], team_ids: Mapping[str, str],
+    ) -> tuple[list[CurrentPlayer], dict[str, str]]:
+        output: list[CurrentPlayer] = []
+        mapping: dict[str, str] = {}
+        descriptors: dict[str, str] = {}
+        for row in rows:
+            provider_id = str(row.get("id", ""))
+            team_provider = str(row.get("team", ""))
+            position = POSITION_CODES.get(_integer(row.get("element_type")) or 0)
+            price = _integer(row.get("now_cost"))
+            full_name = " ".join(str(row.get(key) or "").strip() for key in ("first_name", "second_name")).strip()
+            if not full_name:
+                full_name = str(row.get("web_name") or "").strip()
+            reason = None
+            identity_key = None
+
+            try:
+                identity_key = official_fpl_player_identity_key(row)
+            except IdentityResolutionError:
+                pass
+
+            if not provider_id or not full_name:
+                reason = "missing identity fields"
+            elif identity_key is None:
+                reason = "missing or invalid stable player code"
+            elif team_provider not in team_ids:
+                reason = "unresolved team"
+            elif position is None:
+                # Non-player entries such as Assistant Manager stay outside V1.
+                continue
+            elif price is None:
+                reason = "missing current price"
+
+            descriptor = identity_key or ""
+
+            if (
+                reason is None
+                and descriptor in descriptors
+                and descriptors[descriptor] != provider_id
+            ):
+                reason = "duplicate stable player code"
+
+            if reason is not None:
+                self.unresolved.append(f"player:{provider_id or '<missing-id>'}:{reason}")
+                continue
+
+            descriptors[descriptor] = provider_id
+            expected_canonical_id = _canonical_id("ply", descriptor)
+            mapped = self._mapped("player", provider_id)
+
+            if mapped is not None and mapped != expected_canonical_id:
+                raise CurrentIdentityError(
+                    "Existing current canonical database contains a legacy "
+                    "name-derived player mapping. Rebuild current.duckdb before "
+                    "running the code-based identity scheme."
+                )
+
+            if mapped is None:
+                mapped = expected_canonical_id
+                collision = self.db.connection.execute(
+                    "SELECT canonical_name FROM dim_player WHERE player_id=?", [mapped]
+                ).fetchone()
+                if collision is None:
+                    self.db.persist_player(Player(
+                        player_id=mapped, canonical_name=full_name,
+                        first_name=str(row.get("first_name") or "") or None,
+                        last_name=str(row.get("second_name") or "") or None,
+                        known_as=str(row.get("web_name") or "") or None,
+                        identity_status=IdentityStatus.confirmed,
+                        created_at=self.at, updated_at=self.at,
+                    ))
+                self.db.persist_player_mapping(PlayerProviderMapping(
+                    player_id=mapped, provider=self.scope, provider_id=provider_id,
+                    provider_name=full_name, effective_from=self.effective_from,
+                    match_method=MatchMethod.exact_external_id, match_confidence=1.0,
+                    review_status=ReviewStatus.confirmed, created_at=self.at,
+                    updated_at=self.at, source_record_id=provider_id, retrieved_at=self.at,
+                ))
+                self.created["player"].append(mapped)
+            else:
+                self.reused["player"].append(mapped)
+            self._membership(mapped, team_ids[team_provider])
+            mapping[provider_id] = mapped
+            output.append(CurrentPlayer(
+                provider_id, mapped, team_provider, team_ids[team_provider], position,
+                price, str(row.get("web_name") or full_name), MappingProxyType(dict(row)),
+            ))
+        return output, mapping
+
+    def _membership(self, player_id: str, team_id: str) -> None:
+        active = self.db.connection.execute(
+            "SELECT team_id,CAST(effective_from AS VARCHAR) FROM dim_player_team_spell WHERE player_id=? "
+            "AND effective_from<=? AND (effective_to IS NULL OR effective_to>=?) "
+            "ORDER BY effective_from DESC LIMIT 1", [player_id, self.at, self.at],
+        ).fetchone()
+        if active and active[0] == team_id:
+            return
+        if active:
+            self.db.connection.execute(
+                "UPDATE dim_player_team_spell SET effective_to=? WHERE player_id=? AND effective_from=?",
+                [self.at - timedelta(microseconds=1), player_id, active[1]],
+            )
+        self.db.persist_player_team_spell(PlayerTeamSpell(
+            player_id=player_id, team_id=team_id, competition_id=self.competition_id,
+            effective_from=self.at, source=self.scope, source_record_id=player_id,
+            retrieved_at=self.at, confidence=1.0,
+        ))
+
+    def fixtures(
+        self, rows: list[Mapping[str, object]], team_ids: Mapping[str, str], known_at: datetime,
+    ) -> tuple[list[CurrentFixture], dict[str, str]]:
+        output: list[CurrentFixture] = []
+        mapping: dict[str, str] = {}
+        for row in rows:
+            provider_id = str(row.get("id", ""))
+            home_provider, away_provider = str(row.get("team_h", "")), str(row.get("team_a", ""))
+            if not provider_id or home_provider not in team_ids or away_provider not in team_ids:
+                self.unresolved.append(f"fixture:{provider_id or '<missing-id>'}:unresolved teams")
+                continue
+            mapped = self._mapped("fixture", provider_id)
+            descriptor = (
+                f"Premier League|{self.season.replace('/', '-')}|"
+                f"{self.team_names[home_provider].casefold()}|"
+                f"{self.team_names[away_provider].casefold()}"
+            )
+            kickoff = None if row.get("kickoff_time") in (None, "") else _parse_time(row["kickoff_time"], "fixture kickoff")
+            if mapped is None:
+                mapped = _canonical_id("fix", descriptor)
+                if not self.db.connection.execute(
+                    "SELECT 1 FROM dim_fixture WHERE fixture_id=?", [mapped]
+                ).fetchone():
+                    if kickoff is None:
+                        # Persist only once a schedule exists; the unresolved row
+                        # remains visible in the audit and cannot enter a horizon.
+                        self.unresolved.append(f"fixture:{provider_id}:missing kickoff")
+                        continue
+                    self.db.persist_fixture(Fixture(
+                        fixture_id=mapped, competition_id=self.competition_id, season=self.season,
+                        home_team_id=team_ids[home_provider], away_team_id=team_ids[away_provider],
+                        scheduled_kickoff=kickoff, status=_fixture_status(row),
+                        created_at=self.at, updated_at=self.at,
+                    ))
+                self.db.persist_fixture_mapping(FixtureProviderMapping(
+                    fixture_id=mapped, provider=self.scope, provider_id=provider_id,
+                    provider_name=None, effective_from=self.effective_from,
+                    match_method=MatchMethod.exact_external_id, match_confidence=1.0,
+                    review_status=ReviewStatus.confirmed, created_at=self.at,
+                    updated_at=self.at, source_record_id=provider_id, retrieved_at=self.at,
+                    provider_kickoff=kickoff,
+                ))
+                self.created["fixture"].append(mapped)
+            else:
+                self.reused["fixture"].append(mapped)
+                if kickoff is not None:
+                    existing = self.db.connection.execute(
+                        "SELECT CAST(scheduled_kickoff AS VARCHAR),CAST(created_at AS VARCHAR) "
+                        "FROM dim_fixture WHERE fixture_id=?", [mapped]
+                    ).fetchone()
+                    if existing is None:
+                        raise CurrentIdentityError(f"Fixture mapping {provider_id} references a missing entity")
+                    self.db.persist_fixture(Fixture(
+                        fixture_id=mapped, competition_id=self.competition_id, season=self.season,
+                        home_team_id=team_ids[home_provider], away_team_id=team_ids[away_provider],
+                        scheduled_kickoff=kickoff, status=_fixture_status(row),
+                        created_at=_parse_time(existing[1], "fixture created_at"), updated_at=self.at,
+                    ))
+            mapping[provider_id] = mapped
+            target_gameweek = _integer(row.get("event"))
+            if target_gameweek is None:
+                self.unresolved.append(f"fixture:{provider_id}:missing gameweek")
+            output.append(CurrentFixture(
+                provider_id, mapped, target_gameweek, home_provider, away_provider,
+                team_ids[home_provider], team_ids[away_provider], kickoff, known_at,
+                _fixture_status(row), MappingProxyType(dict(row)),
+            ))
+        return output, mapping
+
+    def audit(self) -> IdentityAudit:
+        return IdentityAudit(
+            self.scope,
+            tuple(sorted(self.created["player"])), tuple(sorted(self.reused["player"])),
+            tuple(sorted(self.created["team"])), tuple(sorted(self.reused["team"])),
+            tuple(sorted(self.created["fixture"])), tuple(sorted(self.reused["fixture"])),
+            tuple(sorted(self.unresolved)),
+        )
+
+
+def _fixture_status(row: Mapping[str, object]) -> str:
+    if bool(row.get("finished")):
+        return "finished"
+    if row.get("kickoff_time") in (None, ""):
+        return "postponed"
+    return "started" if bool(row.get("started")) else "scheduled"
+
+
+def _availability(element: Mapping[str, object]) -> tuple[float | None, bool]:
+    chance = _number(element.get("chance_of_playing_next_round"))
+    if chance is not None:
+        return max(0.0, min(1.0, chance / 100.0)), False
+    status = element.get("status")
+    if status == "a":
+        return 1.0, False
+    if status in {"s", "u"}:
+        return 0.0, True
+    return None, False
+
+
+def _current_history(
+    fixtures: list[CurrentFixture], players: list[CurrentPlayer], live: tuple[CurrentSourceRecord, ...],
+    prediction_timestamp: datetime,
+) -> tuple[list[MatchObservation], dict[str, list[MinutesObservation]], dict[str, list[PlayerPerformanceObservation]], list[str]]:
+    matches: list[MatchObservation] = []
+    minutes: dict[str, list[MinutesObservation]] = defaultdict(list)
+    talent: dict[str, list[PlayerPerformanceObservation]] = defaultdict(list)
+    warnings: list[str] = []
+
+    by_provider_player = {
+        row.provider_id: row
+        for row in players
+    }
+
+    by_gw_team: dict[
+        tuple[int, str],
+        list[CurrentFixture],
+    ] = defaultdict(list)
+
+    for fixture in fixtures:
+        if (
+            fixture.target_gameweek is None
+            or fixture.kickoff is None
+            or fixture.kickoff >= prediction_timestamp
+        ):
+            continue
+
+        by_gw_team[
+            (
+                fixture.target_gameweek,
+                fixture.home_provider_team_id,
+            )
+        ].append(fixture)
+
+        by_gw_team[
+            (
+                fixture.target_gameweek,
+                fixture.away_provider_team_id,
+            )
+        ].append(fixture)
+
+    # Current-season Official FPL event-live exposes
+    # player expected_goals. Aggregate it to team xG so the
+    # xG Team Strength model does not silently fall back to
+    # actual goals for completed current-season fixtures.
+    team_xg: dict[
+        tuple[str, str],
+        float,
+    ] = defaultdict(float)
+
+    team_xg_seen: set[
+        tuple[str, str]
+    ] = set()
+
+    for record in live:
+
+        gameweek = _integer(
+            record.entity.rsplit(
+                "_",
+                1,
+            )[-1]
+        )
+
+        if (
+            gameweek is None
+            or not isinstance(
+                record.payload,
+                dict,
+            )
+        ):
+            continue
+
+        for item in record.payload.get(
+            "elements",
+            [],
+        ):
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            player = by_provider_player.get(
+                str(
+                    item.get(
+                        "id",
+                        "",
+                    )
+                )
+            )
+
+            stats = item.get(
+                "stats"
+            )
+
+            if (
+                player is None
+                or not isinstance(
+                    stats,
+                    dict,
+                )
+            ):
+                continue
+
+            candidates = by_gw_team.get(
+                (
+                    gameweek,
+                    player.provider_team_id,
+                ),
+                [],
+            )
+
+            if len(candidates) != 1:
+
+                if candidates:
+                    warnings.append(
+                        f"GW{gameweek} aggregate for "
+                        f"{player.player_id} spans ambiguous "
+                        "fixtures; fixture history omitted."
+                    )
+
+                continue
+
+            fixture = candidates[0]
+
+            expected_goals = _number(
+                stats.get(
+                    "expected_goals"
+                )
+            )
+
+            if expected_goals is not None:
+
+                key = (
+                    fixture.fixture_id,
+                    player.team_id,
+                )
+
+                team_xg[key] += (
+                    expected_goals
+                )
+
+                team_xg_seen.add(
+                    key
+                )
+
+            played = _integer(
+                stats.get(
+                    "minutes"
+                )
+            )
+
+            started = _integer(
+                stats.get(
+                    "starts"
+                )
+            )
+
+            if (
+                played is None
+                or started is None
+            ):
+                continue
+
+            observation = MinutesObservation(
+                player.player_id,
+                fixture.fixture_id,
+                fixture.kickoff,
+                record.known_at,
+                played,
+                bool(started),
+            )
+
+            minutes[
+                player.player_id
+            ].append(
+                observation
+            )
+
+            talent[
+                player.player_id
+            ].append(
+                PlayerPerformanceObservation(
+                    player.player_id,
+                    fixture.fixture_id,
+                    fixture.kickoff,
+                    record.known_at,
+                    played,
+                    player.team_id,
+                    _canonical_id(
+                        "comp",
+                        COMPETITION_NAME,
+                    ),
+                    player.position,
+                    npxg=None,
+                    xa=_number(
+                        stats.get(
+                            "expected_assists"
+                        )
+                    ),
+                    goals=_number(
+                        stats.get(
+                            "goals_scored"
+                        )
+                    ),
+                    source=(
+                        "official_fpl_api"
+                    ),
+                    source_fields=(
+                        "expected_assists",
+                    ),
+                )
+            )
+
+    # Build match observations only after team xG has been
+    # aggregated from event-live.
+    for fixture in fixtures:
+
+        row = fixture.provider_payload
+
+        if not (
+            fixture.kickoff is not None
+            and fixture.kickoff
+            < prediction_timestamp
+            and row.get(
+                "team_h_score"
+            ) is not None
+            and row.get(
+                "team_a_score"
+            ) is not None
+        ):
+            continue
+
+        home_key = (
+            fixture.fixture_id,
+            fixture.home_team_id,
+        )
+
+        away_key = (
+            fixture.fixture_id,
+            fixture.away_team_id,
+        )
+
+        home_xg = (
+            team_xg[home_key]
+            if home_key
+            in team_xg_seen
+            else None
+        )
+
+        away_xg = (
+            team_xg[away_key]
+            if away_key
+            in team_xg_seen
+            else None
+        )
+
+        # Avoid mixing xG for one side with goals for the
+        # other side inside one Team Strength observation.
+        if (
+            (home_xg is None)
+            != (away_xg is None)
+        ):
+
+            warnings.append(
+                "Official event-live expected_goals "
+                f"is incomplete for {fixture.fixture_id}; "
+                "Team Strength uses score fallback."
+            )
+
+            home_xg = None
+            away_xg = None
+
+        matches.append(
+            MatchObservation(
+                fixture.fixture_id,
+                fixture.kickoff,
+                fixture.known_at,
+                fixture.home_team_id,
+                fixture.away_team_id,
+                float(
+                    row[
+                        "team_h_score"
+                    ]
+                ),
+                float(
+                    row[
+                        "team_a_score"
+                    ]
+                ),
+                home_xg,
+                away_xg,
+                season=None,
+            )
+        )
+
+    return (
+        matches,
+        minutes,
+        talent,
+        warnings,
+    )
+
+
+def _set_piece_records(players: list[CurrentPlayer], at: datetime) -> tuple[SetPieceRecord, ...]:
+    output: list[SetPieceRecord] = []
+    fields_to_types = {
+        "penalties_order": (SetPieceType.PENALTIES,),
+        "direct_freekicks_order": (SetPieceType.DIRECT_FREE_KICKS,),
+        "corners_and_indirect_freekicks_order": (
+            SetPieceType.INDIRECT_FREE_KICKS, SetPieceType.CORNERS_LEFT, SetPieceType.CORNERS_RIGHT,
+        ),
+    }
+    for player in players:
+        for field_name, kinds in fields_to_types.items():
+            rank = _integer(player.provider_payload.get(field_name))
+            if rank is None or rank < 1:
+                continue
+            for kind in kinds:
+                output.append(SetPieceRecord(
+                    effective_from=at, known_at=at, source="official_fpl_api", confidence=1.0,
+                    source_record_id=player.provider_id, team_id=player.team_id,
+                    player_id=player.player_id, set_piece_type=kind, rank=rank,
+                ))
+    return tuple(output)
+
+
+def _load_scoring(root: Path, season: str) -> FPLScoringEngine:
+    active = load_scoring_rules_config(root)
+    if active.season == season:
+        return FPLScoringEngine(active)
+    try:
+        explicit = load_scoring_rules_config(root, season=season)
+    except Exception as exc:
+        raise CurrentInputError(f"No explicit scoring rules exist for season {season}") from exc
+    if explicit.season != season:
+        raise CurrentInputError("Scoring rules season mismatch")
+    return FPLScoringEngine(explicit)
+
+
+def _load_optimizer_rules(root: Path, season: str) -> OptimizerRules:
+    active = OptimizerRules.load(root)
+    if active.season == season:
+        return active
+    try:
+        explicit = OptimizerRules.load(root, season=season)
+    except Exception as exc:
+        raise CurrentInputError(f"No explicit optimizer rules exist for season {season}") from exc
+    if explicit.season != season:
+        raise CurrentInputError("Optimizer rules season mismatch")
+    return explicit
+
+
+def _load_active_model_manifest(root: Path, season: str) -> Mapping[str, object]:
+    v2_path = root / "config" / "v2_champions.yaml"
+    v1_path = root / "config" / "v1_champions.yaml"
+    path = v2_path if v2_path.exists() else v1_path
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise CurrentInputError("The champion manifest is unavailable or invalid") from exc
+    if not isinstance(payload, dict) or payload.get("season") != season:
+        raise CurrentInputError(f"The V1 champion manifest is not valid for season {season}")
+    active = payload.get("active")
+    if not isinstance(active, dict):
+        raise CurrentInputError("The V1 champion manifest lacks an active model set")
+    fixed = {
+        "team_strength": "dixon_coles_v1_hl60_xg",
+        "simulation": FixtureSimulator.VERSION,
+        "projection": ProjectionBuilder.VERSION,
+    }
+    mismatches = {
+        key: active.get(key) for key, expected in fixed.items()
+        if active.get(key) != expected
+    }
+    if active.get("minutes") not in {
+        "minutes_hurdle_v1",
+        "minutes_hurdle_v2",
+    }:
+        mismatches["minutes"] = active.get("minutes")
+
+    if active.get("player_talent") not in {
+        "player_talent_empirical_bayes_v1", "player_talent_reliability_v2",
+    }:
+        mismatches["player_talent"] = active.get("player_talent")
+    events = active.get("event_models")
+    valid_events = isinstance(events, dict) and set(events) == {
+        "goals", "assists", "clean_sheets", "saves", "defensive_contributions", "bonus",
+    }
+    if valid_events:
+        valid_events = all(
+            value == ("coherent_assists_v2" if key == "assists" and value == "coherent_assists_v2"
+                      else "event_models_v1")
+            for key, value in events.items()
+        )
+    if not valid_events:
+        mismatches["event_models"] = events
+    if mismatches:
+        raise CurrentInputError(
+            f"The active V1 manifest requests unsupported runtime implementations: {mismatches}"
+        )
+    return MappingProxyType(payload)
+
+
+def _runtime_model_stack(manifest: Mapping[str, object]):
+    """Resolve registered implementations without changing the active manifest.
+
+    V2 implementations are only instantiated when a later evidence review edits
+    the versioned champion manifest.  The checked-in manifest therefore remains
+    byte-for-byte reproducible with the V1 runtime.
+    """
+    active = manifest["active"]
+
+    minutes = (
+        HurdleTimeDecayMinutesModel()
+        if active["minutes"] == "minutes_hurdle_v2"
+        else MinutesModel()
+    )
+
+    talent = (
+        PlayerTalentV2() if active["player_talent"] == "player_talent_reliability_v2"
+        else PlayerTalentModel()
+    )
+
+    events = active["event_models"]
+    event_model = EventModelsV2() if events["assists"] == "coherent_assists_v2" else EventModels()
+
+    return TeamStrengthModel(), minutes, talent, event_model
+
+
+def _minutes_calibration_path(
+    root: Path,
+    training_season: str,
+    minutes_model_version: str,
+) -> Path:
+    if minutes_model_version == "minutes_hurdle_v1":
+        filename = (
+            f"minutes_calibration_{training_season}.json"
+        )
+    elif minutes_model_version == "minutes_hurdle_v2":
+        filename = (
+            f"minutes_calibration_v21_{training_season}.json"
+        )
+    else:
+        raise CurrentInputError(
+            "Unsupported Minutes model version: "
+            f"{minutes_model_version}"
+        )
+
+    return (
+        root
+        / "data"
+        / "processed"
+        / "models"
+        / "minutes"
+        / filename
+    )
+
+
+
+def _build_goal_allocation_promotion_candidate(
+    *,
+    project_root: Path,
+    config: CurrentPipelineConfig,
+    players: list[CurrentPlayer],
+    prediction_timestamp: datetime,
+):
+    """Materialize the validated goal-allocation candidate.
+
+    Disabled mode intentionally returns before touching STRICT
+    history so the default pipeline remains behaviourally V1.
+    """
+
+    if not config.goal_allocation_proxy_enabled:
+        return None
+
+    source_season = (
+        config.goal_allocation_source_season
+    )
+
+    if source_season is None:
+
+        if not config.history_seasons:
+
+            raise CurrentInputError(
+                "Goal-allocation promotion candidate "
+                "requires prior-season history."
+            )
+
+        source_season = (
+            config.history_seasons[-1]
+        )
+
+
+    player_refs = tuple(
+        GoalAllocationPlayerRef(
+            player_id=player.player_id,
+            position=player.position,
+            display_name=getattr(
+                player,
+                "display_name",
+                None,
+            ),
+        )
+        for player in players
+    )
+
+
+    try:
+
+        artifact = (
+            build_strict_goal_allocation_proxy(
+                project_root=project_root,
+                source_season=source_season,
+                prediction_timestamp=(
+                    prediction_timestamp
+                ),
+                current_players=(
+                    player_refs
+                ),
+            )
+        )
+
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+    ) as exc:
+
+        raise CurrentInputError(
+            "Goal-allocation promotion "
+            "candidate could not be "
+            "materialized safely: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
+    if artifact.matched_count < 1:
+
+        raise CurrentInputError(
+            "Goal-allocation promotion "
+            "candidate has no canonical "
+            "historical evidence."
+        )
+
+
+    return artifact
+
+
+def _apply_goal_allocation_promotion_candidate(
+    event_model,
+    artifact,
+):
+    """Swap only the validated V1 Event Model boundary."""
+
+    if artifact is None:
+        return event_model
+
+
+    if type(event_model) is not EventModels:
+
+        raise CurrentInputError(
+            "Goal-allocation promotion candidate "
+            "is validated only against "
+            "EventModels V1; active runtime is "
+            f"{type(event_model).__name__}."
+        )
+
+
+    proxy_by_player = (
+        artifact
+        .evidence_proxy_by_player()
+    )
+
+
+    if not proxy_by_player:
+
+        raise CurrentInputError(
+            "Goal-allocation promotion candidate "
+            "contains no usable player evidence."
+        )
+
+
+    return GoalAllocationEventModels(
+        proxy_by_player
+    )
+
+
+def _persist_current_source_records(
+    database: CanonicalDatabase, records: tuple[CurrentSourceRecord, ...],
+) -> None:
+    """Persist one idempotent canonical snapshot fact per observed source state."""
+    for record in records:
+        timestamp = _utc(
+            record.source_snapshot_timestamp or record.known_at,
+            f"{record.source}.{record.entity}.source_snapshot_timestamp",
+        )
+        identity = "|".join((
+            record.source, record.entity, record.checksum, timestamp.isoformat(),
+        ))
+        snapshot_id = "snapshot_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        if database.connection.execute(
+            "SELECT 1 FROM fact_fpl_snapshot WHERE snapshot_id=?", [snapshot_id]
+        ).fetchone():
+            continue
+        database.connection.execute(
+            "INSERT INTO fact_fpl_snapshot "
+            "(snapshot_id,snapshot_timestamp,source_provider,source_record_id,retrieved_at,"
+            "entity,effective_at,provider_payload) VALUES (?,?,?,?,?,?,?,?)",
+            [
+                snapshot_id, timestamp, record.source,
+                record.raw_snapshot_id or record.cache_key, record.retrieved_at,
+                record.entity, timestamp,
+                json.dumps(_jsonable(record.payload), sort_keys=True),
+            ],
+        )
+
+
+class CurrentPredictionPipeline:
+    """Concrete current data -> V1 projections -> optional shadow composition."""
+
+    def __init__(
+        self, source: CurrentDataSource, *, project_root: Path, config: CurrentPipelineConfig,
+        progress: Callable[[str], None] | None = None,
+    ):
+        self.source = source
+        self.project_root = Path(project_root)
+        self.config = config
+        self.progress = progress or (lambda _: None)
+
+    def run(
+        self, context: PredictionContext, *, squad_state_path: Path | None = None,
+        materialized_source: CurrentSourceData | None = None,
+        market_quotes: tuple[MarketQuote, ...] = (),
+    ) -> CurrentRunResult:
+        at = _utc(context.prediction_timestamp, "prediction_timestamp")
+        season = context.target_season
+        if season is None:
+            raise CurrentInputError("current prediction requires an explicit season")
+        scoring = _load_scoring(self.project_root, season)
+        optimizer_rules = _load_optimizer_rules(self.project_root, season)
+        champion_manifest = _load_active_model_manifest(self.project_root, season)
+
+        # Production Minutes V1 uses a frozen calibration artifact from the
+        # completed season immediately preceding the target season.
+        try:
+            target_start_year = int(season.split("/", 1)[0])
+        except (ValueError, IndexError) as exc:
+            raise CurrentInputError(
+                f"Cannot derive previous season from target season {season!r}"
+            ) from exc
+
+        minutes_calibration_season = (
+            f"{target_start_year - 1}-{target_start_year % 100:02d}"
+        )
+        minutes_model_version = (
+            champion_manifest["active"]["minutes"]
+        )
+
+        minutes_calibration_path = (
+            _minutes_calibration_path(
+                self.project_root,
+                minutes_calibration_season,
+                minutes_model_version,
+            )
+        )
+
+        if not minutes_calibration_path.exists():
+            raise CurrentInputError(
+                "Frozen Minutes calibration artifact is missing: "
+                f"{minutes_calibration_path}"
+            )
+
+        minutes_calibration = load_minutes_calibration(
+            minutes_calibration_path
+        )
+
+        if minutes_calibration.trained_through > at:
+            raise CurrentInputError(
+                "Minutes calibration artifact contains future information: "
+                f"trained_through={minutes_calibration.trained_through.isoformat()}, "
+                f"prediction_timestamp={at.isoformat()}"
+            )
+
+        minutes_calibration_sha256 = hashlib.sha256(
+            minutes_calibration_path.read_bytes()
+        ).hexdigest()
+
+        self.progress("provider ingestion")
+        source = materialized_source if materialized_source is not None else self.source.refresh(context)
+        records = (source.bootstrap, source.fixtures, *source.event_live, *source.optional)
+        for record in records:
+            if record.source == "official_fpl_api":
+                if record.source_snapshot_timestamp is None:
+                    raise CurrentSourceError(
+                        f"{record.source}.{record.entity} lacks a source snapshot timestamp"
+                    )
+                assert_snapshot_before(
+                    snapshot_timestamp=record.source_snapshot_timestamp,
+                    prediction_timestamp=at,
+                    source=f"{record.source}.{record.entity}",
+                )
+            else:
+                assert_information_known(
+                    known_at=record.known_at, prediction_timestamp=at,
+                    entity=record.entity, source=record.source,
+                )
+            if record.retrieved_at > at:
+                raise CurrentSourceError(
+                    f"{record.source}.{record.entity} retrieved_at is after prediction_timestamp"
+                )
+        if not isinstance(source.bootstrap.payload, dict):
+            raise CurrentSourceError("Official FPL bootstrap root must be an object")
+        if not isinstance(source.fixtures.payload, list):
+            raise CurrentSourceError("Official FPL fixtures root must be an array")
+        bootstrap = source.bootstrap.payload
+        elements, teams = bootstrap.get("elements"), bootstrap.get("teams")
+        if not isinstance(elements, list) or not isinstance(teams, list):
+            raise CurrentSourceError("Official FPL bootstrap lacks players or teams")
+
+        run_dir = self.config.output_root / season.replace("/", "-") / at.strftime("%Y%m%dT%H%M%SZ")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self.config.canonical_database.parent.mkdir(parents=True, exist_ok=True)
+        database = CanonicalDatabase(self.config.canonical_database)
+        warnings = list(source.warnings)
+        warnings.append(
+            "No production model has been promoted; frozen V1 implementations run under KEEP_TESTING."
+        )
+        try:
+            _persist_current_source_records(database, records)
+            self.progress("canonical identity resolution")
+            identity = _IdentityMaterializer(database, context)
+            team_ids = identity.teams([row for row in teams if isinstance(row, dict)])
+            players, player_ids = identity.players(
+                [row for row in elements if isinstance(row, dict)], team_ids,
+            )
+            fixtures, fixture_ids = identity.fixtures(
+                [row for row in source.fixtures.payload if isinstance(row, dict)],
+                team_ids, source.fixtures.known_at,
+            )
+            audit = identity.audit()
+            if audit.unresolved:
+                critical = [
+                    row for row in audit.unresolved
+                    if row.startswith(("team:", "player:"))
+                    or (row.startswith("fixture:") and not row.endswith((
+                        ":missing kickoff", ":missing gameweek",
+                    )))
+                ]
+                if critical:
+                    raise CurrentIdentityError(f"Unresolved critical identities: {critical}")
+                warnings.extend(audit.unresolved)
+            if not players:
+                raise CurrentIdentityError("No canonical current players were resolved")
+            horizon = tuple(sorted(
+                (row for row in fixtures
+                 if row.target_gameweek is not None
+                 and context.target_gameweek <= row.target_gameweek <= context.target_gameweek + self.config.projection_horizon_gameweeks - 1
+                 and row.kickoff is not None and row.kickoff > at),
+                key=lambda row: (row.target_gameweek or 0, row.kickoff, row.fixture_id),
+            ))
+            incomplete = [
+                row for row in source.fixtures.payload if isinstance(row, dict)
+                and (_integer(row.get("event")) or 0) in range(context.target_gameweek, context.target_gameweek + self.config.projection_horizon_gameweeks)
+                and row.get("kickoff_time") in (None, "")
+            ]
+            if incomplete:
+                raise CurrentSourceError("Fixture horizon contains unscheduled fixtures without kickoff timestamps")
+            if not horizon:
+                raise CurrentSourceError(f"No future fixtures are available in the requested {self.config.projection_horizon_gameweeks}-Gameweek horizon")
+
+            current_matches, minutes_history, talent_history, history_warnings = _current_history(
+                fixtures, players, source.event_live, at,
+            )
+            warnings.extend(history_warnings)
+            try:
+                from fpl_engine.current_history import load_strict_historical_context
+                historical = load_strict_historical_context(
+                    self.project_root, self.config.history_seasons, prediction_timestamp=at,
+                )
+                current_matches = list(historical.matches) + current_matches
+                for player_id, rows in historical.minutes.items():
+                    minutes_history[player_id].extend(rows)
+                for player_id, rows in historical.talent.items():
+                    talent_history[player_id].extend(rows)
+                warnings.extend(historical.warnings)
+                history_versions = historical.source_versions
+            except (OSError, ValueError, RuntimeError) as exc:
+                warnings.append(f"Historical STRICT context unavailable; documented priors used: {type(exc).__name__}.")
+                history_versions = ()
+            if not history_versions:
+                warnings.append("No materialized prior-season STRICT context was loaded; model priors carry that gap.")
+            goal_allocation_artifact = (
+                _build_goal_allocation_promotion_candidate(
+                    project_root=self.project_root,
+                    config=self.config,
+                    players=players,
+                    prediction_timestamp=at,
+                )
+            )
+
+            if goal_allocation_artifact is not None:
+                warnings.append(
+                    "Goal-allocation promotion candidate "
+                    f"enabled from STRICT "
+                    f"{goal_allocation_artifact.source_season}; "
+                    f"canonical evidence "
+                    f"{goal_allocation_artifact.matched_count}/"
+                    f"{goal_allocation_artifact.current_player_count}. "
+                    "talent_npxg_per90 remains unchanged."
+                )
+
+            warnings.extend((
+                "Current non-penalty xG is unavailable; Player Talent uses its documented position prior.",
+                "Confirmed pre-match formations and lineups are unavailable unless supplied by mapped enrichment/manual context.",
+                "Manager regime is UNKNOWN unless a point-in-time mapped source or manual context supplies it.",
+                "Unsupported event/BPS inputs remain NULL and lower event completeness.",
+            ))
+
+            self.progress("feature and model inference")
+            team_model, minute_model, talent_model, event_model = _runtime_model_stack(
+                champion_manifest
+            )
+            event_model = (
+                _apply_goal_allocation_promotion_candidate(
+                    event_model,
+                    goal_allocation_artifact,
+                )
+            )
+            tactical_model = TacticalContextEngine()
+            simulation_override = __import__("os").environ.get("FPL_SIMULATOR_CHALLENGER", "").strip().lower()
+            simulation_selection = (
+                simulation_override
+                or "v22"
+            )
+
+            if simulation_selection not in {
+                "v1",
+                "v2",
+                "v21",
+                "v22",
+            }:
+                raise CurrentInputError(
+                    "FPL_SIMULATOR_CHALLENGER "
+                    "must be v1, v2, v21, or v22"
+                )
+
+            simulator_cls = (
+                FixtureSimulatorV22
+                if simulation_selection == "v22"
+                else FixtureSimulatorV21
+                if simulation_selection == "v21"
+                else FixtureSimulatorV2
+                if simulation_selection == "v2"
+                else FixtureSimulator
+            )
+            simulator = simulator_cls(scoring, SimulationConfig(
+                simulations_per_fixture=self.config.simulations_per_fixture,
+                random_seed=self.config.random_seed, retain_simulations=False,
+            ))
+            default_projection_weights = (
+                ProjectionBuilder().horizon_weights
+            )
+
+            horizon_count = (
+                self.config
+                .projection_horizon_gameweeks
+            )
+
+            if (
+                horizon_count
+                <= len(default_projection_weights)
+            ):
+                projection_weights = (
+                    default_projection_weights[
+                        :horizon_count
+                    ]
+                )
+            else:
+                projection_weights = (
+                    default_projection_weights
+                    + (
+                        default_projection_weights[-1],
+                    )
+                    * (
+                        horizon_count
+                        - len(
+                            default_projection_weights
+                        )
+                    )
+                )
+
+            projection_builder = ProjectionBuilder(
+                horizon_weights=projection_weights
+            )
+            manual = load_manual_context(self.project_root / "config" / "manual_context.yaml")
+            by_team: dict[str, list[CurrentPlayer]] = defaultdict(list)
+            for player in players:
+                by_team[player.team_id].append(player)
+            set_pieces = _set_piece_records(players, source.bootstrap.known_at)
+            squad_records: list[SquadRoleRecord] = []
+            for player in players:
+                history = minutes_history.get(player.player_id, [])
+                recent = sorted(history, key=lambda row: row.kickoff)[-5:]
+                probability, _ = _availability(player.provider_payload)
+                squad_records.append(SquadRoleRecord(
+                    effective_from=source.bootstrap.known_at, known_at=source.bootstrap.known_at,
+                    source="official_fpl_api", confidence=1.0, team_id=player.team_id,
+                    player_id=player.player_id, tactical_role=TacticalRole.UNKNOWN,
+                    availability_probability=probability,
+                    recent_start_share=(sum(row.started for row in recent) / len(recent)) if recent else None,
+                ))
+            role_records = tuple(RoleRecord(
+                effective_from=source.bootstrap.known_at, known_at=source.bootstrap.known_at,
+                source="official_fpl_api", confidence=1.0, player_id=player.player_id,
+                team_id=player.team_id, tactical_role=TacticalRole.UNKNOWN,
+                fpl_position=player.position,
+            ) for player in players)
+            spells = _read_spells(database)
+            optional_availability, optional_warnings = _api_football_availability(
+                source.optional, database, at,
+            )
+            warnings.extend(optional_warnings)
+            bootstrap_availability = {
+                player.player_id: AvailabilityRecord(
+                    effective_from=source.bootstrap.known_at, known_at=source.bootstrap.known_at,
+                    source="official_fpl_api", confidence=1.0, player_id=player.player_id,
+                    status=str(player.provider_payload.get("status") or "") or None,
+                    chance_of_playing=_integer(player.provider_payload.get("chance_of_playing_next_round")),
+                    confirmed_suspension=player.provider_payload.get("status") == "s",
+                ) for player in players
+            }
+
+            strengths = []
+            minutes_outputs = []
+            tactical_outputs = []
+            talent_outputs = []
+            event_outputs = []
+            projection_inputs = []
+            fixture_seeds = {}
+            for index, fixture in enumerate(horizon, 1):
+                self.progress(f"fixtures simulated {index}/{len(horizon)}")
+                strength = team_model.predict(
+                    current_matches, fixture.home_team_id, fixture.away_team_id, at,
+                    target_fixture_id=fixture.fixture_id,
+                )
+                strengths.append(strength)
+                sides: dict[str, list[PlayerFixtureInput]] = {"home": [], "away": []}
+                for side, team_id in (("home", fixture.home_team_id), ("away", fixture.away_team_id)):
+                    for player in by_team.get(team_id, []):
+                        availability_probability, definitely_unavailable = _availability(player.provider_payload)
+                        minute_context = MinutesContext(
+                            player.player_id, fixture.fixture_id, at, position=player.position,
+                            availability_probability=availability_probability,
+                            availability_known_at=source.bootstrap.known_at,
+                            availability_confidence=1.0 if availability_probability is not None else None,
+                            definitely_unavailable=definitely_unavailable,
+                            signals=(MinutesFeatureSignal(
+                                "status", player.provider_payload.get("status"),
+                                source.bootstrap.known_at, source.bootstrap.known_at,
+                                "official_fpl_api",
+                            ),),
+                        )
+                        minute_prediction = minute_model.predict(
+                            minutes_history.get(player.player_id, ()),
+                            minute_context,
+                            calibration=minutes_calibration,
+                        )
+                        availability_rows = [bootstrap_availability[player.player_id]]
+                        availability_rows.extend(optional_availability.get(player.player_id, ()))
+                        tactical = tactical_model.resolve(
+                            player_id=player.player_id, team_id=team_id,
+                            prediction_timestamp=at, target_fixture_id=fixture.fixture_id,
+                            roles=role_records, set_pieces=set_pieces, squad=squad_records,
+                            availability=availability_rows, player_team_spells=spells,
+                            manual_context=manual,
+                        )
+                        talent = talent_model.predict(
+                            talent_history.get(player.player_id, ()), player_id=player.player_id,
+                            target_fixture_id=fixture.fixture_id, prediction_timestamp=at,
+                            current_team_id=team_id, current_competition_id=identity.competition_id,
+                            fpl_position=player.position, tactical_context=tactical,
+                        )
+                        minutes_outputs.append(minute_prediction)
+                        tactical_outputs.append(tactical)
+                        talent_outputs.append(talent)
+                        sides[side].append(PlayerFixtureInput(
+                            player.player_id, team_id, fixture.fixture_id, at, player.position,
+                            minute_prediction, talent, tactical_context=tactical,
+                        ))
+                event_projection = event_model.predict_fixture(
+                    sides["home"], sides["away"], fixture_id=fixture.fixture_id,
+                    prediction_timestamp=at, team_strength=strength,
+                )
+                event_outputs.append(event_projection)
+                simulation = simulator.simulate(event_projection, strength)
+                fixture_seeds[fixture.fixture_id] = simulation.derived_fixture_seed
+                projection_inputs.append(FixtureProjectionInput(
+                    season, scoring.version, fixture.target_gameweek or context.target_gameweek,
+                    fixture.kickoff, fixture.known_at, simulation,
+                ))
+
+            market_shadow_report = None
+
+            if market_quotes:
+                self.progress("market shadow evaluation")
+
+                market_shadow_report = build_market_shadow_report(
+                    event_outputs,
+                    market_quotes,
+                    prediction_timestamp=at,
+                )
+
+                warnings.append(
+                    "Bookmaker market priors were evaluated in SHADOW mode only; "
+                    "production event rates, simulation and EV were unchanged."
+                )
+
+            projections = projection_builder.build(
+                projection_inputs, current_gameweek=context.target_gameweek,
+                player_ids=(player.player_id for player in players),
+            )
+            if len(projections) != len(players):
+                raise CurrentPipelineError("Projection universe is incomplete")
+            candidate_pool = tuple(sorted((
+                SquadPlayer(
+                    player.player_id, player.position, player.team_id,
+                    player.current_price, player.current_price, player.current_price,
+                ) for player in players
+            ), key=lambda row: row.player_id))
+
+            self.progress("projection persistence")
+            store = ProjectionStore(run_dir / "projections.duckdb")
+            try:
+                store.persist(projections)
+                parquet_path = store.export_parquet(run_dir / "parquet")
+            finally:
+                store.close()
+            database.export_parquet(run_dir / "canonical_parquet")
+
+            provenance = [{
+                "source": record.source, "entity": record.entity,
+                "known_at": record.known_at, "retrieved_at": record.retrieved_at,
+                "checksum": record.checksum, "source_version": record.source_version,
+                "raw_snapshot_id": record.raw_snapshot_id,
+                "cache_key": record.cache_key, "from_cache": record.from_cache,
+                "source_snapshot_timestamp": record.source_snapshot_timestamp,
+            } for record in records]
+            artifacts = {
+                "prediction_context": run_dir / "prediction_context.json",
+                "source_provenance": run_dir / "source_provenance.json",
+                "source_freshness": run_dir / "source_freshness.json",
+                "identity_audit": run_dir / "identity_audit.json",
+                "current_players": run_dir / "current_players.json",
+                "fixture_horizon": run_dir / "fixture_horizon.json",
+                "team_strength": run_dir / "team_strength.json",
+                "minutes": run_dir / "minutes.json",
+                "tactical_context": run_dir / "tactical_context.json",
+                "player_talent": run_dir / "player_talent.json",
+                "event_projections": run_dir / "event_projections.json",
+                "player_projections": run_dir / "player_projections.json",
+                "candidate_pool": run_dir / "candidate_pool.json",
+                "shadow_bundle": run_dir / "shadow_projection_bundle.json",
+                "warnings": run_dir / "warnings.json",
+                "human_report": run_dir / "current_report.md",
+                "projection_parquet": parquet_path,
+            }
+
+            if goal_allocation_artifact is not None:
+                artifacts["goal_allocation_proxy"] = (
+                    run_dir
+                    / "goal_allocation_proxy.json"
+                )
+
+            if market_shadow_report is not None:
+                artifacts["market_shadow"] = (
+                    run_dir / "market_shadow.json"
+                )
+
+            _write_json(artifacts["prediction_context"], context.model_dump(mode="python"))
+            _write_json(artifacts["source_provenance"], provenance)
+            _write_json(artifacts["source_freshness"], [
+                {
+                    "source": record.source, "entity": record.entity,
+                    "known_at": record.known_at, "retrieved_at": record.retrieved_at,
+                    "raw_snapshot_id": record.raw_snapshot_id,
+                    "cache_key": record.cache_key, "from_cache": record.from_cache,
+                    "source_snapshot_timestamp": record.source_snapshot_timestamp,
+                } for record in records
+            ])
+            _write_json(artifacts["identity_audit"], audit)
+            _write_json(artifacts["current_players"], players)
+            _write_json(artifacts["fixture_horizon"], horizon)
+            _write_json(artifacts["team_strength"], strengths)
+            _write_json(artifacts["minutes"], minutes_outputs)
+            _write_json(artifacts["tactical_context"], tactical_outputs)
+            _write_json(artifacts["player_talent"], talent_outputs)
+            if goal_allocation_artifact is not None:
+                _write_json(
+                    artifacts[
+                        "goal_allocation_proxy"
+                    ],
+                    goal_allocation_artifact.to_dict(),
+                )
+
+            _write_json(artifacts["event_projections"], event_outputs)
+            _write_json(artifacts["player_projections"], projections)
+
+            if market_shadow_report is not None:
+                _write_json(
+                    artifacts["market_shadow"],
+                    market_shadow_report,
+                )
+            _write_json(artifacts["candidate_pool"], candidate_pool)
+            simulation_mode = "PRODUCTION" if self.config.simulations_per_fixture == 10_000 else "NON-PRODUCTION DIAGNOSTIC"
+            pipeline_metadata = {
+                "version": CURRENT_PIPELINE_VERSION,
+                "simulation_mode": simulation_mode,
+                "simulations_per_fixture": self.config.simulations_per_fixture,
+                "base_seed": self.config.random_seed,
+                "seed_strategy": "SimulationRandom deterministic fixture-scoped derived seed",
+                "fixture_seeds": fixture_seeds,
+                "simulator_version": simulator.VERSION,
+                "simulation_challenger": simulator.VERSION != FixtureSimulator.VERSION,
+                "frozen_simulator_version": FixtureSimulator.VERSION,
+                "projection_builder_version": ProjectionBuilder.VERSION,
+                "market_shadow": {
+                    "enabled": (
+                        market_shadow_report is not None
+                    ),
+                    "production_influence": False,
+                    "selected_quote_count": (
+                        market_shadow_report.selected_quote_count
+                        if market_shadow_report is not None
+                        else 0
+                    ),
+                    "prior_count": (
+                        market_shadow_report.prior_count
+                        if market_shadow_report is not None
+                        else 0
+                    ),
+                    "players_with_market_prior": (
+                        market_shadow_report.players_with_market_prior
+                        if market_shadow_report is not None
+                        else 0
+                    ),
+                    "providers": sorted({
+                        quote.provider
+                        for quote in market_quotes
+                    }),
+                },
+            }
+            bundle = {
+                "prediction_timestamp": at, "season": season,
+                "current_gameweek": context.target_gameweek,
+                "candidate_pool": candidate_pool, "projections": projections,
+                "pipeline": pipeline_metadata,
+                "data_freshness": [{
+                    "source": f"{record.source}.{record.entity}",
+                    "known_at": record.known_at,
+                    "source_snapshot_timestamp": record.source_snapshot_timestamp,
+                    "raw_snapshot_id": record.raw_snapshot_id,
+                    "cache_key": record.cache_key,
+                } for record in records],
+            }
+            _write_json(artifacts["shadow_bundle"], bundle)
+            _write_json(artifacts["warnings"], warnings)
+
+            shadow_reports = None
+            if squad_state_path is not None:
+                shadow_reports = run_shadow(
+                    squad_state_path, project_root=self.project_root, output_dir=run_dir,
+                    prediction_bundle_path=artifacts["shadow_bundle"],
+                    allow_diagnostic=self.config.simulations_per_fixture != 10_000,
+                    clock=lambda: at,
+                )
+                artifacts["recommendation_machine"] = shadow_reports[0]
+                artifacts["recommendation_human"] = shadow_reports[1]
+            source_versions = sorted({record.source_version for record in records}) + list(history_versions)
+            manifest = {
+                "run_manifest_version": 1, "pipeline_version": CURRENT_PIPELINE_VERSION,
+                "prediction_timestamp": at, "season": season,
+                "target_gameweek": context.target_gameweek,
+                "data_cutoff": at, "source_versions": source_versions,
+                "dataset_version": hashlib.sha256("|".join(source_versions).encode()).hexdigest(),
+                "feature_versions": sorted({
+                    row.feature_version for row in minutes_outputs
+                } | {row.feature_version for row in talent_outputs} | {
+                    row.feature_version for event in event_outputs
+                    for team in (event.home, event.away) for row in team.players
+                }),
+                "model_versions": sorted({row.model_id for row in strengths}
+                    | {row.model_version for row in minutes_outputs}
+                    | {row.model_version for row in talent_outputs}
+                    | {event.model_version for event in event_outputs}),
+                "champion_status": champion_manifest.get("status", "KEEP_TESTING"),
+                "active_models": champion_manifest["active"],
+                # Backward-compatible alias retained for old readers.
+                "active_v1": champion_manifest["active"],
+                "model_artifacts": {
+                    "minutes_calibration": {
+                        "artifact_version": "minutes_calibration_v1",
+                        "model_version": minutes_model_version,
+                        "training_season": minutes_calibration_season,
+                        "trained_through": minutes_calibration.trained_through.isoformat(),
+                        "sha256": minutes_calibration_sha256,
+                        "path": str(
+                            minutes_calibration_path.relative_to(
+                                self.project_root
+                            )
+                        ),
+                    },
+                },
+                "source_policy": {
+                    "required": ["official_fpl_api.bootstrap_static", "official_fpl_api.fixtures"],
+                    "optional": ["official_fpl_api.event_live", "api_football.injuries", "manual_context", "strict_historical_context"],
+                },
+                "scoring_rule_version": scoring.version,
+                "scoring_season": scoring.season,
+                "optimizer_rule_version": optimizer_rules.version,
+                "simulator_policy": {
+                    "default": "v22",
+                    "runtime_selection": simulation_selection,
+                    "explicit_v1_rollback": (
+                        simulation_selection == "v1"
+                    ),
+                    "supported": [
+                        "v1",
+                        "v2",
+                        "v21",
+                        "v22",
+                    ],
+                },
+                "decision_policies": {
+                    "default": "greedy_1gw",
+                    "challengers": ["optimizer_v1", "optimizer_v2"],
+                },
+                "simulation": pipeline_metadata,
+                "configuration_hashes": _configuration_hashes(self.project_root, season),
+                "unresolved_identity_count": len(audit.unresolved),
+                "warnings": warnings, "git_commit": _git_commit(self.project_root),
+                "artifacts": {},
+            }
+            manifest[
+                "goal_allocation_policy"
+            ] = {
+                "policy_version": (
+                    "goal_allocation_default_v1"
+                ),
+                "default_enabled": True,
+                "enabled_this_run": (
+                    self.config
+                    .goal_allocation_proxy_enabled
+                ),
+                "selection": (
+                    "goal_allocation_proxy_v1"
+                    if goal_allocation_artifact
+                    is not None
+                    else "event_models_v1"
+                ),
+                "runtime_event_model": (
+                    type(
+                        event_model
+                    ).__name__
+                ),
+                "explicit_v1_rollback": (
+                    not self.config
+                    .goal_allocation_proxy_enabled
+                ),
+                "rollback_model": (
+                    "event_models_v1"
+                ),
+                "silent_fallback_allowed": False,
+            }
+
+            if goal_allocation_artifact is not None:
+
+                evidence_rows = tuple(
+                    row
+                    for row in goal_allocation_artifact.rows
+                    if row.used_historical_total_xg
+                )
+
+                source_metrics = sorted({
+                    row.source_metric
+                    for row in evidence_rows
+                })
+
+                intended_uses = sorted({
+                    row.intended_use
+                    for row in evidence_rows
+                })
+
+                proxy_model_versions = sorted({
+                    row.model_version
+                    for row in evidence_rows
+                })
+
+                proxy_feature_versions = sorted({
+                    row.feature_version
+                    for row in evidence_rows
+                })
+
+                manifest[
+                    "promotion_candidates"
+                ] = {
+                    "goal_allocation_proxy": {
+                        "status": (
+                            "PROMOTION_CANDIDATE"
+                        ),
+                        "enabled": True,
+                        "source_season": (
+                            goal_allocation_artifact
+                            .source_season
+                        ),
+                        "artifact_version": (
+                            goal_allocation_artifact
+                            .artifact_version
+                        ),
+                        "alpha": (
+                            goal_allocation_artifact
+                            .alpha
+                        ),
+                        "prior_minutes": (
+                            goal_allocation_artifact
+                            .prior_minutes
+                        ),
+                        "matched_count": (
+                            goal_allocation_artifact
+                            .matched_count
+                        ),
+                        "current_player_count": (
+                            goal_allocation_artifact
+                            .current_player_count
+                        ),
+                        "match_rate": (
+                            goal_allocation_artifact
+                            .match_rate
+                        ),
+                        "source_repository_ref": (
+                            goal_allocation_artifact
+                            .source_repository_ref
+                        ),
+                        "source_checksum": (
+                            goal_allocation_artifact
+                            .source_checksum
+                        ),
+                        "source_metrics": (
+                            source_metrics
+                        ),
+                        "intended_uses": (
+                            intended_uses
+                        ),
+                        "proxy_model_versions": (
+                            proxy_model_versions
+                        ),
+                        "proxy_feature_versions": (
+                            proxy_feature_versions
+                        ),
+                        "runtime_event_model": (
+                            type(
+                                event_model
+                            ).__name__
+                        ),
+                        "talent_npxg_modified": False,
+                        "team_goal_envelope_modified": False,
+                        "penalty_process_modified": False,
+                        "artifact": (
+                            artifacts[
+                                "goal_allocation_proxy"
+                            ]
+                            .relative_to(
+                                run_dir
+                            )
+                            .as_posix()
+                        ),
+                    },
+                }
+
+            _write_human_report(
+                artifacts["human_report"], context, players, projections,
+                source, warnings, shadow_reports,
+            )
+            manifest_path = run_dir / "run_manifest.json"
+            manifest["artifacts"] = {
+                name: {
+                    "path": path.relative_to(run_dir).as_posix(),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                } for name, path in artifacts.items() if path.exists()
+            }
+            _write_json(manifest_path, manifest)
+            artifacts["run_manifest"] = manifest_path
+            self.progress(f"projections completed {len(projections)}")
+            return CurrentRunResult(
+                run_dir, tuple(projections), candidate_pool, horizon,
+                MappingProxyType(dict(artifacts)), tuple(warnings), shadow_reports,
+                tuple(event_outputs), tuple(players), MappingProxyType({
+                    team_ids[provider_id]: name
+                    for provider_id, name in identity.team_names.items()
+                    if provider_id in team_ids
+                }),
+            )
+        except CanonicalIntegrityError as exc:
+            raise CurrentIdentityError("Canonical persistence rejected conflicting current state") from exc
+        finally:
+            database.close()
+
+
+def _read_spells(database: CanonicalDatabase) -> tuple[PlayerTeamSpell, ...]:
+    rows = database.connection.execute(
+        "SELECT player_id,team_id,competition_id,CAST(effective_from AS VARCHAR),"
+        "CAST(effective_to AS VARCHAR),transfer_type,source,source_record_id,"
+        "CAST(retrieved_at AS VARCHAR),confidence FROM dim_player_team_spell"
+    ).fetchall()
+    return tuple(PlayerTeamSpell(
+        player_id=row[0], team_id=row[1], competition_id=row[2],
+        effective_from=_parse_time(row[3], "spell effective_from"),
+        effective_to=None if row[4] is None else _parse_time(row[4], "spell effective_to"),
+        transfer_type=row[5], source=row[6], source_record_id=row[7],
+        retrieved_at=_parse_time(row[8], "spell retrieved_at"), confidence=row[9],
+    ) for row in rows)
+
+
+def _api_football_availability(records, database, at):
+    output: dict[str, list[AvailabilityRecord]] = defaultdict(list)
+    warnings: list[str] = []
+    for record in records:
+        if record.source != "api_football" or record.entity != "injuries" or not isinstance(record.payload, list):
+            continue
+        for item in record.payload:
+            if not isinstance(item, dict) or not isinstance(item.get("player"), dict):
+                continue
+            provider_id = str(item["player"].get("id") or "")
+            rows = database.connection.execute(
+                "SELECT player_id FROM dim_player_provider_map WHERE provider='api_football' "
+                "AND provider_id=? AND review_status='confirmed' AND created_at<=?",
+                [provider_id, at],
+            ).fetchall()
+            if len(rows) != 1:
+                warnings.append(f"API-Football injury player {provider_id} lacks one confirmed canonical mapping.")
+                continue
+            output[rows[0][0]].append(AvailabilityRecord(
+                effective_from=record.known_at, known_at=record.known_at,
+                source="api_football", confidence=0.9, player_id=rows[0][0],
+                status="i", injury_severity_bucket=str(item["player"].get("reason") or "") or None,
+            ))
+    return output, warnings
+
+
+def _configuration_hashes(root: Path, season: str) -> dict[str, str]:
+    season_name = season.replace("/", "_")
+    paths = (
+        "docs/03_SIMULATION/scoring_rules.yaml",
+        f"docs/03_SIMULATION/scoring_rules/{season_name}.yaml",
+        "docs/04_OPTIMIZER/fpl_rules.yaml",
+        f"docs/04_OPTIMIZER/fpl_rules/{season_name}.yaml",
+        "config/manual_context.yaml",
+        "config/v1_champions.yaml",
+    )
+    return {
+        name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+        for name in paths if (root / name).exists()
+    }
+
+
+def _git_commit(root: Path) -> str | None:
+    head = root / ".git" / "HEAD"
+    try:
+        value = head.read_text(encoding="ascii").strip()
+        if value.startswith("ref: "):
+            value = (root / ".git" / value[5:]).read_text(encoding="ascii").strip()
+        return value or None
+    except OSError:
+        return None
+
+
+def _write_human_report(path, context, players, projections, source, warnings, shadow_reports):
+    by_id = {player.player_id: player for player in players}
+    lines = [
+        "# CURRENT RUN", "",
+        f"Prediction timestamp: `{context.prediction_timestamp.isoformat()}`",
+        f"Season / GW: `{context.target_season}` / `{context.target_gameweek}`",
+        "", "## Data freshness", "",
+        f"- Official FPL bootstrap known at `{source.bootstrap.known_at.isoformat()}`.",
+        f"- Official FPL fixtures known at `{source.fixtures.known_at.isoformat()}`.",
+        f"- Event-live history records: `{len(source.event_live)}`.",
+        "", "## Top projections", "",
+    ]
+    for horizon, field_name in ((1, "ev_next_1"), (3, "ev_next_3"), (6, "ev_next_6")):
+        lines.extend((f"### {horizon}GW", ""))
+        for position in ("GK", "DEF", "MID", "FWD"):
+            rows = sorted(
+                (row for row in projections if by_id[row.player_id].position == position),
+                key=lambda row: (-getattr(row, field_name), row.player_id),
+            )[:5]
+            rendered = ", ".join(
+                f"{by_id[row.player_id].display_name} {getattr(row, field_name):.2f} "
+                f"(confidence {row.projection_confidence:.2f}, uncertainty {row.projection_uncertainty:.2f})"
+                for row in rows
+            ) or "unavailable"
+            lines.append(f"- {position}: {rendered}")
+        lines.append("")
+    if shadow_reports:
+        shadow = json.loads(shadow_reports[0].read_text(encoding="utf-8"))
+        greedy = shadow["recommendations"]["greedy_1gw"]
+        lines.extend((
+            "## EXPERIMENTAL / SHADOW MODE", "", "NOT PRODUCTION PROMOTED.", "",
+            "Recommended policy: **Greedy 1GW**.", "",
+            f"- Action: `{greedy['action']}`",
+            f"- OUT / IN: `{greedy['transfers_out']}` / `{greedy['transfers_in']}`",
+            f"- Projected net gain: `{greedy['net_projected_gain']:.2f}`",
+            f"- XI: `{greedy['starting_xi']}`",
+            f"- Bench: `{greedy['bench_order']}`",
+            f"- Captain / vice: `{greedy['captain']}` / `{greedy['vice_captain']}`",
+            "", "### Challengers", "",
+        ))
+        for policy in ("optimizer_v1", "optimizer_v2"):
+            item = shadow["recommendations"][policy]
+            lines.append(
+                f"- {policy}: `{item['action']}`; OUT `{item['transfers_out']}`; "
+                f"IN `{item['transfers_in']}`; net gain `{item['net_projected_gain']:.2f}`."
+            )
+        lines.extend(("", f"Machine report: `{shadow_reports[0].name}`.", ""))
+    if warnings:
+        lines.extend(("## Warnings", "", *(f"- {warning}" for warning in warnings), ""))
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def team_id_squad_ingestion_limitation(team_id: int) -> CurrentInputError:
+    return CurrentInputError(
+        f"Public team-id {team_id} cannot provide a complete current SquadState: "
+        "current bank, free transfers, purchase/selling prices and authoritative chip state "
+        "require authenticated account data. Supply --squad-state instead."
+    )

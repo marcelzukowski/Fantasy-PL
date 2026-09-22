@@ -1,0 +1,72 @@
+version: 202425
+competition: Fantasy Premier League
+season: "2024/25"
+description: Historical 2024/25 optimizer rules; Assistant Manager is recorded but excluded from V1 player-chip strategies.
+metadata:
+  primary_authority: "Premier League/Fantasy Premier League 2024/25 rules announcement"
+  source_urls: ["https://www.premierleague.com/en/news/4058895"]
+  assistant_manager: "Introduced as the Mystery Chip; unsupported by optimizer_v1 and intentionally excluded."
+initial_squad:
+  squad_size: 15
+  maximum_players_per_club: 3
+  initial_budget: 1000
+positions:
+  goalkeeper: {canonical_code: GK, squad_count: 2}
+  defender: {canonical_code: DEF, squad_count: 5}
+  midfielder: {canonical_code: MID, squad_count: 5}
+  forward: {canonical_code: FWD, squad_count: 3}
+starting_xi:
+  valid_formations: ["3-4-3", "3-5-2", "4-3-3", "4-4-2", "4-5-1", "5-2-3", "5-3-2", "5-4-1"]
+transfers:
+  normal_gameweek:
+    free_transfers_granted_per_gameweek: 1
+    maximum_bankable_free_transfers: 5
+    points_cost_per_transfer_above_allowance: 4
+    maximum_regular_transfers_per_gameweek: 20
+free_transfer_state: {minimum: 1, maximum: 5}
+decision_v2:
+  candidate_generation:
+    candidates_per_metric: 8
+    maximum_candidates_per_position: 24
+    second_transfer_beam_width: 24
+  free_transfer_option_value:
+    interpretation: "Expected avoided future -4 hit when an additional free transfer is retained."
+    future_transfer_need_probability: 0.25
+  lookahead:
+    steps: 1
+    discount: 0.95
+    future_prices: "hold current point-in-time prices constant"
+  indifference_margin_points: 0.25
+  similar_projection_gain_points: 1.0
+  sensitivity:
+    runs: 24
+    projection_uncertainty_scale: 0.15
+chip_timing_v2:
+  evaluation_horizon_gameweeks: 6
+  minimum_incremental_ev: 1.0
+  future_opportunity_tolerance: 0.25
+  wildcard_minimum_weighted_gain: 8.0
+  free_hit_minimum_single_gameweek_gain: 6.0
+captaincy: {captain_multiplier: 2}
+triple_captain: {captain_multiplier: 3}
+chips:
+  maximum_active_per_gameweek: 1
+  types: [wildcard, free_hit, bench_boost, triple_captain]
+  total_per_season: {wildcard: 1, free_hit: 1, bench_boost: 1, triple_captain: 1}
+  excluded_from_v1: [assistant_manager]
+chip_periods:
+  # Optimizer ChipState uses H1/H2 flags.  The 2024/25 single set is represented
+  # wholly in H1 so it cannot be used a second time after GW19.
+  first_half: {gameweeks: {through: 38}}
+  second_half: {gameweeks: {through: 38}}
+wildcard:
+  transfer_limit: {unlimited: true}
+  transfer_hit_cost: 0
+  squad_change: {temporary: false, permanent: true}
+  free_transfer_state: {banked_transfers_retained: true}
+free_hit:
+  transfer_limit: {unlimited: true}
+  transfer_hit_cost: 0
+  squad_change: {temporary: true, duration_gameweeks: 1}
+  persistent_state: {restore_original_squad_next_deadline: true, restore_original_bank_next_deadline: true}
+  free_transfer_state: {banked_transfers_retained: true}

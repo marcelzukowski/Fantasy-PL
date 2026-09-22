@@ -1,0 +1,79 @@
+﻿# Python bytecode, test output, and tooling caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytype/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Local environments and Python packaging output
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Packaging and release output
+build/
+dist/
+*.exe
+*.msi
+*.spec.bak
+
+# Generated, cached, and account-specific data
+data/cache/
+data/raw/
+data/snapshots/*
+!data/snapshots/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/
+data/user/
+data/market_shadow/
+data/reports/
+data/outputs/
+*.duckdb
+*.sqlite
+*.sqlite3
+*.db
+*.parquet
+*.feather
+
+# Experiments, runtime output, logs, and temporary files
+scratch/
+reports/
+logs/
+*.log
+*.pid
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE and operating-system files
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+desktop.ini

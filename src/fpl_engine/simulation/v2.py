@@ -1,0 +1,797 @@
+"""SIM-V2 challenger: team-coherent reconciled lineup sampling.
+
+V1 remains frozen and byte-reproducible.  This challenger reconciles
+player-level start probabilities to one goalkeeper plus ten outfield
+starters while preserving player appearance marginals where feasible.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Mapping, Sequence
+
+import numpy as np
+
+from fpl_engine.models.events import (
+    FixtureEventProjection,
+    PlayerFixtureEvents,
+    TeamEventProjection,
+)
+from fpl_engine.models.team_strength import TeamStrengthResult
+from fpl_engine.simulation.fixture import (
+    FixtureSimulationResult,
+    FixtureSimulator,
+    PitchState,
+    on_pitch_interval,
+)
+
+
+class FixtureSimulatorV2(FixtureSimulator):
+    """FixtureSimulator challenger with reconciled team-lineup marginals."""
+
+    VERSION = "fixture_simulator_v2_reconciled_lineup"
+
+    def __init__(self, scoring, config):
+        super().__init__(scoring, config)
+        self._reconciled_start_probabilities: (
+            dict[str, Mapping[str, float] | None] | None
+        ) = None
+
+    def simulate(
+        self,
+        events: FixtureEventProjection,
+        team_strength: TeamStrengthResult,
+    ) -> FixtureSimulationResult:
+        if self._reconciled_start_probabilities is not None:
+            raise RuntimeError(
+                "FixtureSimulatorV2 does not support re-entrant simulate()"
+            )
+
+        # Calculated once per fixture, not once per Monte Carlo draw.
+        self._reconciled_start_probabilities = {
+            events.home.team_id: self._reconcile_start_probabilities(
+                events.home
+            ),
+            events.away.team_id: self._reconcile_start_probabilities(
+                events.away
+            ),
+        }
+
+        try:
+            return super().simulate(
+                events,
+                team_strength,
+            )
+        finally:
+            self._reconciled_start_probabilities = None
+
+    @staticmethod
+    def _reconcile_group_start_probabilities(
+        players: Sequence[PlayerFixtureEvents],
+        target: int,
+    ) -> dict[str, float] | None:
+        """Project player start marginals onto a fixed slot count.
+
+        Tiny floating-point violations are normalized, while genuine
+        probability inconsistencies still fail closed.
+        """
+        if target < 0:
+            raise ValueError(
+                "target starter count must be non-negative"
+            )
+
+        tolerance = 1e-12
+
+        output = {
+            player.rates.player_id: 0.0
+            for player in players
+        }
+
+        eligible: list[PlayerFixtureEvents] = []
+
+        # Normalized probabilities are used throughout this method.
+        # We do not mutate the upstream event projection.
+        normalized: dict[str, tuple[float, float]] = {}
+
+        for player in players:
+            pid = player.rates.player_id
+
+            raw_p_app = float(
+                player.rates.p_appearance
+            )
+
+            raw_p_start = float(
+                player.rates.p_start
+            )
+
+            if (
+                not math.isfinite(raw_p_app)
+                or not math.isfinite(raw_p_start)
+                or raw_p_app < -tolerance
+                or raw_p_start < -tolerance
+                or raw_p_app > 1.0 + tolerance
+                or raw_p_start > 1.0 + tolerance
+                or raw_p_start
+                > raw_p_app + tolerance
+            ):
+                raise ValueError(
+                    "invalid appearance/start probability for "
+                    f"{pid}: "
+                    f"p_start={raw_p_start!r}, "
+                    f"p_appearance={raw_p_app!r}"
+                )
+
+            p_app = min(
+                1.0,
+                max(0.0, raw_p_app),
+            )
+
+            p_start = min(
+                p_app,
+                min(
+                    1.0,
+                    max(0.0, raw_p_start),
+                ),
+            )
+
+            normalized[pid] = (
+                p_app,
+                p_start,
+            )
+
+            if p_app > 0.0:
+                eligible.append(player)
+
+        if target == 0:
+            return output
+
+        if len(eligible) < target:
+            return None
+
+        appearance_capacity = sum(
+            normalized[
+                player.rates.player_id
+            ][0]
+            for player in eligible
+        )
+
+        if (
+            appearance_capacity
+            < target - tolerance
+        ):
+            return None
+
+        def solve(
+            group: Sequence[PlayerFixtureEvents],
+            required_mass: float,
+        ) -> dict[str, float] | None:
+            result = {
+                player.rates.player_id: 0.0
+                for player in group
+            }
+
+            if not group:
+                return (
+                    result
+                    if abs(required_mass) <= tolerance
+                    else None
+                )
+
+            upper = np.asarray(
+                [
+                    normalized[
+                        player.rates.player_id
+                    ][0]
+                    for player in group
+                ],
+                dtype=float,
+            )
+
+            capacity = float(
+                upper.sum()
+            )
+
+            if (
+                required_mass < -tolerance
+                or required_mass
+                > capacity + tolerance
+            ):
+                return None
+
+            if required_mass <= tolerance:
+                return result
+
+            if (
+                capacity - required_mass
+                <= tolerance
+            ):
+                for player, probability in zip(
+                    group,
+                    upper,
+                ):
+                    result[
+                        player.rates.player_id
+                    ] = float(probability)
+
+                return result
+
+            conditional_start = np.asarray(
+                [
+                    (
+                        normalized[
+                            player.rates.player_id
+                        ][1]
+                        /
+                        normalized[
+                            player.rates.player_id
+                        ][0]
+                    )
+                    for player in group
+                ],
+                dtype=float,
+            )
+
+            eps = 1e-9
+
+            conditional_start = np.clip(
+                conditional_start,
+                eps,
+                1.0 - eps,
+            )
+
+            logits = np.log(
+                conditional_start
+                / (1.0 - conditional_start)
+            )
+
+            def probabilities(
+                offset: float,
+            ) -> np.ndarray:
+                shifted = np.clip(
+                    logits + offset,
+                    -60.0,
+                    60.0,
+                )
+
+                conditional = (
+                    1.0
+                    / (
+                        1.0
+                        + np.exp(-shifted)
+                    )
+                )
+
+                return upper * conditional
+
+            low = -60.0
+            high = 60.0
+
+            for _ in range(100):
+                middle = (
+                    low + high
+                ) / 2.0
+
+                mass = float(
+                    probabilities(
+                        middle
+                    ).sum()
+                )
+
+                if mass < required_mass:
+                    low = middle
+                else:
+                    high = middle
+
+            values = probabilities(
+                (low + high) / 2.0
+            )
+
+            drift = (
+                required_mass
+                - float(values.sum())
+            )
+
+            if abs(drift) > 1e-10:
+                room = (
+                    upper - values
+                    if drift > 0
+                    else values
+                )
+
+                for index in np.argsort(
+                    -room
+                ):
+                    available = float(
+                        room[index]
+                    )
+
+                    if available <= 0.0:
+                        continue
+
+                    change = min(
+                        abs(drift),
+                        available,
+                    )
+
+                    if drift > 0:
+                        values[index] += change
+                        drift -= change
+                    else:
+                        values[index] -= change
+                        drift += change
+
+                    if (
+                        abs(drift)
+                        <= 1e-12
+                    ):
+                        break
+
+            for player, probability in zip(
+                group,
+                values,
+            ):
+                result[
+                    player.rates.player_id
+                ] = float(
+                    probability
+                )
+
+            return result
+
+        locked = [
+            player
+            for player in eligible
+            if abs(
+                normalized[
+                    player.rates.player_id
+                ][1]
+                -
+                normalized[
+                    player.rates.player_id
+                ][0]
+            )
+            <= tolerance
+        ]
+
+        flexible = [
+            player
+            for player in eligible
+            if player not in locked
+        ]
+
+        locked_mass = sum(
+            normalized[
+                player.rates.player_id
+            ][1]
+            for player in locked
+        )
+
+        flexible_solution = solve(
+            flexible,
+            float(target)
+            - locked_mass,
+        )
+
+        if (
+            locked_mass
+            <= target + tolerance
+            and flexible_solution
+            is not None
+        ):
+            for player in locked:
+                pid = (
+                    player.rates.player_id
+                )
+
+                output[pid] = (
+                    normalized[pid][1]
+                )
+
+            output.update(
+                flexible_solution
+            )
+
+        else:
+            all_solution = solve(
+                eligible,
+                float(target),
+            )
+
+            if all_solution is None:
+                return None
+
+            output.update(
+                all_solution
+            )
+
+        total = sum(
+            output.values()
+        )
+
+        if (
+            abs(total - target)
+            > 1e-7
+        ):
+            raise RuntimeError(
+                "reconciled probabilities "
+                "do not sum to "
+                f"{target}: {total}"
+            )
+
+        for player in eligible:
+            pid = (
+                player.rates.player_id
+            )
+
+            p_app = normalized[
+                pid
+            ][0]
+
+            if (
+                output[pid]
+                > p_app + tolerance
+            ):
+                raise RuntimeError(
+                    "reconciled p_start "
+                    "exceeds p_appearance"
+                )
+
+        return output
+
+    @classmethod
+    def _reconcile_start_probabilities(
+        cls,
+        team: TeamEventProjection,
+    ) -> dict[str, float] | None:
+        """Build feasible 1 GK + 10 outfield start marginals."""
+        goalkeepers = [
+            player
+            for player in team.players
+            if (
+                player.rates.position == "GK"
+                and float(
+                    player.rates.p_appearance
+                )
+                > 0.0
+            )
+        ]
+
+        outfield = [
+            player
+            for player in team.players
+            if (
+                player.rates.position != "GK"
+                and float(
+                    player.rates.p_appearance
+                )
+                > 0.0
+            )
+        ]
+
+        # Partial synthetic teams retain V1 behaviour.
+        if (
+            len(goalkeepers) < 1
+            or len(outfield) < 10
+        ):
+            return None
+
+        keepers = (
+            cls._reconcile_group_start_probabilities(
+                goalkeepers,
+                1,
+            )
+        )
+
+        field = (
+            cls._reconcile_group_start_probabilities(
+                outfield,
+                10,
+            )
+        )
+
+        if (
+            keepers is None
+            or field is None
+        ):
+            return None
+
+        result = {
+            player.rates.player_id: 0.0
+            for player in team.players
+        }
+
+        result.update(keepers)
+        result.update(field)
+
+        return result
+
+    @staticmethod
+    def _sample_fixed_size(
+        probabilities: Mapping[str, float],
+        player_ids: Sequence[str],
+        rng: np.random.Generator,
+    ) -> set[str]:
+        """Systematic fixed-size sampling preserving inclusion marginals."""
+        entries = [
+            (
+                player_id,
+                float(
+                    probabilities.get(
+                        player_id,
+                        0.0,
+                    )
+                ),
+            )
+            for player_id in player_ids
+            if float(
+                probabilities.get(
+                    player_id,
+                    0.0,
+                )
+            )
+            > 0.0
+        ]
+
+        total = sum(
+            probability
+            for _, probability in entries
+        )
+
+        target = int(
+            round(total)
+        )
+
+        if abs(total - target) > 1e-7:
+            raise RuntimeError(
+                "fixed-size probability mass must be integer: "
+                f"{total}"
+            )
+
+        if target == 0:
+            return set()
+
+        if len(entries) < target:
+            raise RuntimeError(
+                "not enough candidates for fixed-size sample"
+            )
+
+        order = rng.permutation(
+            len(entries)
+        )
+
+        ids = [
+            entries[int(index)][0]
+            for index in order
+        ]
+
+        probs = np.asarray(
+            [
+                entries[int(index)][1]
+                for index in order
+            ],
+            dtype=float,
+        )
+
+        if np.any(
+            (probs < 0.0)
+            | (probs > 1.0)
+        ):
+            raise RuntimeError(
+                "invalid reconciled probability"
+            )
+
+        cumulative = np.cumsum(
+            probs
+        )
+
+        cumulative[-1] = float(
+            target
+        )
+
+        thresholds = (
+            float(rng.random())
+            + np.arange(
+                target,
+                dtype=float,
+            )
+        )
+
+        selected_indices = np.searchsorted(
+            cumulative,
+            thresholds,
+            side="right",
+        )
+
+        selected = {
+            ids[int(index)]
+            for index in selected_indices
+        }
+
+        if len(selected) != target:
+            raise RuntimeError(
+                "fixed-size sampler returned invalid cardinality"
+            )
+
+        return selected
+
+    def _sample_team_minutes(
+        self,
+        team: TeamEventProjection,
+        rng: np.random.Generator,
+    ) -> dict[str, PitchState]:
+        reconciled = (
+            None
+            if self._reconciled_start_probabilities is None
+            else self._reconciled_start_probabilities.get(
+                team.team_id
+            )
+        )
+
+        if reconciled is None:
+            return super()._sample_team_minutes(
+                team,
+                rng,
+            )
+
+        goalkeeper_ids = [
+            player.rates.player_id
+            for player in team.players
+            if player.rates.position == "GK"
+        ]
+
+        outfield_ids = [
+            player.rates.player_id
+            for player in team.players
+            if player.rates.position != "GK"
+        ]
+
+        starters = (
+            self._sample_fixed_size(
+                reconciled,
+                goalkeeper_ids,
+                rng,
+            )
+            | self._sample_fixed_size(
+                reconciled,
+                outfield_ids,
+                rng,
+            )
+        )
+
+        if len(starters) != 11:
+            raise RuntimeError(
+                f"V2 lineup contains {len(starters)} starters"
+            )
+
+        result: dict[str, PitchState] = {}
+
+        for player in team.players:
+            pid = player.rates.player_id
+            started = pid in starters
+
+            if started:
+                distribution = (
+                    player.rates
+                    .starter_minutes_distribution
+                )
+
+                minutes = self._sample_distribution(
+                    distribution,
+                    rng,
+                )
+
+                if minutes == 0:
+                    minutes = self._sample_positive_minutes(
+                        player,
+                        rng,
+                    )
+
+            else:
+                p_app = float(
+                    player.rates.p_appearance
+                )
+
+                reconciled_start = float(
+                    reconciled.get(
+                        pid,
+                        0.0,
+                    )
+                )
+
+                # Preserve the original marginal P(appearance):
+                #
+                # P(app) =
+                #   P(start)
+                #   + P(no start) * P(bench app | no start)
+                bench_mass = max(
+                    0.0,
+                    p_app - reconciled_start,
+                )
+
+                no_start = max(
+                    0.0,
+                    1.0 - reconciled_start,
+                )
+
+                p_bench_given_no_start = (
+                    bench_mass / no_start
+                    if no_start > 1e-12
+                    else 0.0
+                )
+
+                p_bench_given_no_start = min(
+                    1.0,
+                    max(
+                        0.0,
+                        p_bench_given_no_start,
+                    ),
+                )
+
+                appears_from_bench = (
+                    rng.random()
+                    < p_bench_given_no_start
+                )
+
+                if not appears_from_bench:
+                    minutes = 0
+                else:
+                    distribution = (
+                        player.rates
+                        .bench_minutes_distribution
+                    )
+
+                    minutes = (
+                        self._sample_distribution(
+                            distribution,
+                            rng,
+                        )
+                    )
+
+                    if minutes == 0:
+                        minutes = self._sample_positive_minutes(
+                            player,
+                            rng,
+                        )
+
+            entry, exit_minute = (
+                on_pitch_interval(
+                    minutes,
+                    started,
+                )
+            )
+
+            result[pid] = PitchState(
+                started,
+                entry,
+                exit_minute,
+                minutes,
+            )
+
+        return result
+
+    def _sample_positive_minutes(
+        self,
+        player: PlayerFixtureEvents,
+        rng: np.random.Generator,
+    ) -> int:
+        fallback = np.asarray(
+            player.rates.minute_distribution[1:],
+            dtype=float,
+        )
+
+        total = float(
+            fallback.sum()
+        )
+
+        if total <= 0.0:
+            return 1
+
+        return int(
+            rng.choice(
+                np.arange(
+                    1,
+                    91,
+                ),
+                p=fallback / total,
+            )
+        )
