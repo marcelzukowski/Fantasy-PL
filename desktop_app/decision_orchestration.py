@@ -7,8 +7,17 @@ from enum import Enum
 import json
 from pathlib import Path
 
+from fpl_engine.planning import (
+    PlanningContext,
+    PlanningContextError,
+    ProjectionArtifactIntegrityError,
+    build_planning_context,
+    verify_projection_artifacts,
+)
+
 from .orchestration import DesktopEngineError, latest_prediction_run
 from .state import DesktopSquadState
+from fpl_engine.reports import DecisionReportV2, ReportSchemaError, parse_decision_report
 
 
 class DecisionRunState(str, Enum):
@@ -108,7 +117,45 @@ def validate_decision_bundle(
             raise DesktopEngineError(
                 f"The saved production bundle and manifest have different {key}."
             )
+    try:
+        # New manifests are verified here for every load. Legacy manifests
+        # remain discoverable but cannot start a newly verified analysis.
+        verify_projection_artifacts(bundle_path, manifest, require_hashes=False)
+    except ProjectionArtifactIntegrityError as exc:
+        raise DesktopEngineError(str(exc)) from exc
     return bundle
+
+
+def planning_context_for_state(
+    root: Path,
+    state: DesktopSquadState | dict,
+    bundle_path: Path,
+    *,
+    require_canonical_path: bool = True,
+) -> PlanningContext:
+    """Build one verified immutable context for decision, chip, and history use."""
+    season = state["season"] if isinstance(state, dict) else state.season
+    gameweek = state["gameweek"] if isinstance(state, dict) else state.gameweek
+    bundle = validate_decision_bundle(
+        root,
+        bundle_path,
+        season=str(season),
+        gameweek=int(gameweek),
+        require_canonical_path=require_canonical_path,
+    )
+    run_dir = Path(bundle_path).resolve().parent
+    try:
+        context_payload = _json_object(run_dir / "prediction_context.json", "prediction context")
+        manifest = _json_object(run_dir / "run_manifest.json", "run manifest")
+        return build_planning_context(
+            state=state,
+            bundle_path=bundle_path,
+            bundle=bundle,
+            manifest=manifest,
+            prediction_context=context_payload,
+        )
+    except (PlanningContextError, ProjectionArtifactIntegrityError) as exc:
+        raise DesktopEngineError(str(exc)) from exc
 
 
 def decision_bundle_for_state(
@@ -162,20 +209,18 @@ def decision_report_path(output: str) -> Path | None:
     return None
 
 
-def load_decision_report(path: Path) -> dict:
+def load_decision_report(path: Path) -> DecisionReportV2:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return parse_decision_report(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError, ReportSchemaError) as exc:
         raise DesktopEngineError("The decision engine did not produce a readable report.") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("recommendation"), dict):
-        raise DesktopEngineError("The decision engine report is incomplete.")
-    return payload
 
 
-def format_decision_summary(report: dict, selling_prices: dict[str, int]) -> str:
-    """Render only fields supplied by the existing recommendation contract."""
-    recommendation = report["recommendation"]
-    metadata = report.get("player_metadata", {})
+def format_decision_summary(report: DecisionReportV2, selling_prices: dict[str, int]) -> str:
+    """Render only fields supplied by the validated decision report."""
+    recommendation = report.recommendation if isinstance(report, DecisionReportV2) else report["recommendation"]
+    metadata = report.player_metadata if isinstance(report, DecisionReportV2) else report.get("player_metadata", {})
 
     def money(value) -> str:
         return "—" if value is None else f"£{int(value) / 10:.1f}m"

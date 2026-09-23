@@ -210,3 +210,35 @@ def test_retry_after_login_starts_read_only_sync_process(monkeypatch):
         assert "Read-only account synchronization" in window.engine_log.toPlainText()
     finally:
         window.close()
+
+
+def test_successful_sync_clears_only_active_results_when_planning_state_changes(tmp_path):
+    _app()
+    window = MainWindow(ROOT)
+    try:
+        baseline = load_state(ROOT / "data" / "user" / "squad_state.json")
+        player_ids = list(baseline.player_ids)
+        current = replace(
+            baseline,
+            fpl_entry_id=7940073,
+            selling_prices_tenths={player_id: 50 for player_id in player_ids},
+            purchase_prices_tenths={player_id: 49 for player_id in player_ids},
+            starting_player_ids=player_ids[:11],
+            bench_player_ids=player_ids[11:],
+            free_transfers=2,
+        )
+        window._current_state = replace(current, free_transfers=1)
+        window.latest_decision_report = tmp_path / "decision.json"
+        window.latest_chip_report = tmp_path / "chip.json"
+        state_path = tmp_path / "squad_state.json"
+        save_state(state_path, current)
+        window.state_path = state_path
+
+        window._account_sync_finished(0, None)
+
+        assert window.latest_decision_report is None
+        assert window.latest_chip_report is None
+        assert "Planning context changed" in window.analysis_chip_summary.text()
+        assert "active decision and chip results cleared" in window.engine_log.toPlainText()
+    finally:
+        window.close()

@@ -1,4 +1,4 @@
-﻿"""Child-process entry point that adapts desktop state to the existing shadow runner."""
+"""Child-process entry point that adapts desktop state to the existing shadow runner."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import tempfile
 from fpl_engine.optimizer import OptimizerError, SquadState, optimize_lineup, validate_squad
 from fpl_engine.shadow import ShadowRunError, load_squad_state, run_shadow
 from fpl_engine.strategy import StrategicPlannerV3, StrategicPlannerV3Error
+from fpl_engine.reports import DecisionReportV2, ReportSchemaError
 
-from .decision_orchestration import validate_decision_bundle
+from .decision_orchestration import planning_context_for_state, validate_decision_bundle
 from .transfer_plans import TransferPlanView, horizon_transfer_plans
 
 
@@ -260,6 +261,15 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         require_canonical_path=False,
     )
     payload = shadow_input(desktop, bundle)
+    try:
+        planning_context = planning_context_for_state(
+            project_root,
+            desktop,
+            prediction_bundle_path,
+            require_canonical_path=False,
+        )
+    except Exception as exc:
+        raise DesktopDecisionError(str(exc)) from exc
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="fpl-desktop-decision-") as temporary:
@@ -319,7 +329,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         except DesktopDecisionError as exc:
             strategy_unavailable[key] = str(exc)
     result = {
-        "report_version": 3, "mode": report.get("mode"), "external_mutations": report.get("external_mutations", []),
+        "report_version": 4, "mode": report.get("mode"), "external_mutations": report.get("external_mutations", []), "context_id": planning_context.context_id, "planning_context": planning_context.to_dict(),
         "shadow_report": str(machine), "recommendation": recommendation,
         # These are the existing Optimizer V1 candidate plans, already checked
         # against the account state and FPL constraints by the engine.
@@ -334,8 +344,29 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         "strategy_unavailable": strategy_unavailable,
         "player_metadata": _display_metadata(prediction_bundle_path, bundle),
     }
-    destination = output_dir / f"desktop-decision-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
-    destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    created_at = datetime.now(timezone.utc)
+    destination = output_dir / f"desktop-decision-{created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    try:
+        typed_report = DecisionReportV2.create(
+            report_id=destination.stem,
+            created_at=created_at,
+            planning_context=planning_context,
+            mode=result["mode"],
+            external_mutations=result["external_mutations"],
+            shadow_report=result["shadow_report"],
+            recommendation=result["recommendation"],
+            feasible_plans=result["feasible_plans"],
+            strategic_v2=result["strategic_v2"],
+            strategic_v3=result["strategic_v3"],
+            strategic_v3_error=result["strategic_v3_error"],
+            strategy_previews=result["strategy_previews"],
+            strategy_preview_identities=result["strategy_preview_identities"],
+            strategy_unavailable=result["strategy_unavailable"],
+            player_metadata=result["player_metadata"],
+        )
+    except ReportSchemaError as exc:
+        raise DesktopDecisionError(f"Decision report schema validation failed: {exc}") from exc
+    destination.write_text(json.dumps(typed_report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return destination
 
 

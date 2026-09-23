@@ -9,6 +9,7 @@ from pathlib import Path
 from .decision_orchestration import decision_bundle_for_state
 from .orchestration import DesktopEngineError
 from .state import DesktopSquadState
+from fpl_engine.reports import ChipReportV2, ReportSchemaError, parse_chip_report
 
 
 class ChipRunState(str, Enum):
@@ -36,14 +37,12 @@ def chip_report_path(output: str) -> Path | None:
     return None
 
 
-def load_chip_report(path: Path) -> dict:
+def load_chip_report(path: Path) -> ChipReportV2:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return parse_chip_report(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError, ReportSchemaError) as exc:
         raise DesktopEngineError("The chip screen did not produce a readable report.") from exc
-    if not isinstance(payload, dict) or not isinstance(payload.get("recommendation"), dict):
-        raise DesktopEngineError("The chip screen report is incomplete.")
-    return payload
 
 
 def chip_bundle_for_state(
@@ -55,8 +54,9 @@ def chip_bundle_for_state(
     return decision_bundle_for_state(root, state, selected_bundle)
 
 
-def format_chip_summary(report: dict) -> str:
-    recommendation = report["recommendation"]
+def format_chip_summary(report: ChipReportV2 | dict) -> str:
+    """Render validated reports; retain direct-dict support for existing unit-only fixtures."""
+    recommendation = report.recommendation if isinstance(report, ChipReportV2) else report["recommendation"]
     chip = recommendation.get("chip")
     available = recommendation.get("available_chips", [])
     lines = ["Recommended: NO CHIP / ROLL" if chip is None else "Recommended: " + str(chip).replace("_", " ").upper()]
@@ -70,8 +70,8 @@ def format_chip_summary(report: dict) -> str:
     near_end = recommendation.get("near_term_end_gameweek")
     if near_start is not None and near_end is not None:
         lines.append(f"Near-term horizon: GW{int(near_start)}–GW{int(near_end)}")
-    strategy = report.get("strategic")
-    period = report.get("chip_period")
+    strategy = report.strategic_evaluation if isinstance(report, ChipReportV2) else report.get("strategic")
+    period = report.chip_period if isinstance(report, ChipReportV2) else report.get("chip_period")
     if isinstance(strategy, dict):
         stronger = strategy.get("materially_stronger_candidate")
         if isinstance(stronger, dict):

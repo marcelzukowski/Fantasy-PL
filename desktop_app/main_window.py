@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from .data_access import bootstrap_saved_wc, load_players, resolve_player_source
 from .decision_orchestration import (
-    DecisionRunState, decision_arguments, decision_bundle_for_state,
+    DecisionRunState, decision_arguments, decision_bundle_for_state, planning_context_for_state,
     decision_report_path, load_decision_report, write_decision_request,
 )
 from .chip_orchestration import (
@@ -31,6 +31,7 @@ from .fpl_account import AccountSyncState, account_state_issues, cdp_debug_sessi
 from .fixture_display import FixtureDisplayRepository
 from .gameweek_deadlines import first_actionable_gameweek, load_cached_event_deadlines
 from .recommended_lineup import RecommendedLineupError, build_recommended_lineup
+from fpl_engine.reports import ChipReportV2, DecisionReportV2, plan_id
 from .run_center import (
     AnalysisRun,
     ProjectionRun,
@@ -38,13 +39,14 @@ from .run_center import (
     discover_analysis_runs,
     discover_projection_runs,
     write_analysis_run,
+    verify_analysis_report_references,
 )
 from .orchestration import DesktopEngineError, latest_prediction_run, projection_arguments, projection_run_summary, resolve_engine_python
 from .analysis_views import DetailSummary, TransferPlanCards, TransferTargetsTable
 from .transfer_plans import horizon_transfer_plans
 from .squad_pitch import SquadPitchWidget, StrategyLineupPreview
 from .stepper_field import StepperField
-from .state import POSITION_COUNTS, DesktopSquadState, DesktopStateError, load_state, preserve_account_state, save_state, validate_state
+from .state import POSITION_COUNTS, DesktopSquadState, DesktopStateError, load_state, planning_state_changed, preserve_account_state, save_state, validate_state
 from .theme import apply_app_theme
 from .transfer_targets import (
     TransferTarget,
@@ -180,7 +182,7 @@ class MainWindow(QMainWindow):
             group_layout = QVBoxLayout(group)
             options = sorted((p for p in self.players.values() if p.position == position), key=lambda p:(p.display_name.casefold(), p.player_id))
             for index in range(count):
-                box = QComboBox(); box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon); box.setMinimumContentsLength(12); box.addItem("— select player —", None)
+                box = QComboBox(); box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon); box.setMinimumContentsLength(12); box.addItem("Ă˘â‚¬â€ť select player Ă˘â‚¬â€ť", None)
                 for player in options:
                     price = "" if player.current_price is None else f"  £{player.current_price / 10:.1f}"
                     box.addItem(player.display_name + price, player.player_id)
@@ -531,12 +533,21 @@ class MainWindow(QMainWindow):
             return
         self._clear_strategy_previews()
         try:
+            if analysis.legacy_unverified or analysis.context_id is None:
+                raise RunCenterError("Saved analysis is LEGACY / UNVERIFIED. Run a new analysis.")
             if analysis.squad_state is None or analysis.decision_report is None:
                 raise RunCenterError("The saved analysis is incomplete.")
+            current_state = self._state_from_ui()
+            bundle = self._selected_bundle_for_state(current_state)
+            current_context = planning_context_for_state(self.root, current_state, bundle)
+            if current_context.context_id != analysis.context_id:
+                raise RunCenterError("Saved analysis does not match the current planning context.")
             state = analysis.squad_state
-            bundle = self._selected_bundle_for_state(state)
+            verify_analysis_report_references(self.root, analysis)
             report = load_decision_report(analysis.decision_report)
-            if report.get("external_mutations"):
+            if report.context_id != current_context.context_id:
+                raise RunCenterError("Saved analysis does not match the current planning context.")
+            if report.external_mutations:
                 raise RunCenterError("The saved decision report failed the read-only safety check.")
             production_players = load_players(bundle.parent / "current_players.json")
             fixtures = FixtureDisplayRepository(bundle.parent / "current_players.json")
@@ -548,7 +559,9 @@ class MainWindow(QMainWindow):
             )
             if analysis.chip_report is not None:
                 chip_report = load_chip_report(analysis.chip_report)
-                if chip_report.get("external_mutations"):
+                if chip_report.context_id != current_context.context_id:
+                    raise RunCenterError("Saved analysis does not match the current planning context.")
+                if chip_report.external_mutations:
                     raise RunCenterError("The saved chip report failed the read-only safety check.")
                 self.analysis_chip_summary.setText(format_chip_summary(chip_report))
                 self.latest_chip_report = analysis.chip_report
@@ -787,9 +800,9 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _money(value) -> str:
-        return "—" if value is None else f"£{int(value) / 10:.1f}m"
+        return "Ă˘â‚¬â€ť" if value is None else f"£{int(value) / 10:.1f}m"
 
-    def _render_decision_result(self, report: dict) -> None:
+    def _render_decision_result(self, report: DecisionReportV2) -> None:
         selling = self._current_state.selling_prices_tenths if self._current_state else {}
         self._render_transfer_targets(report)
         self._render_transfer_plans(report, selling)
@@ -830,7 +843,7 @@ class MainWindow(QMainWindow):
             status_by_id=status_by_id,
         )
 
-    def _render_transfer_targets(self, report: dict, *, state: DesktopSquadState | None = None,
+    def _render_transfer_targets(self, report: DecisionReportV2, *, state: DesktopSquadState | None = None,
                                  bundle: Path | None = None) -> None:
         """Render production-bundle alternatives without affecting the decision result."""
         try:
@@ -842,8 +855,7 @@ class MainWindow(QMainWindow):
                 include_owned=True,
             )
             self._transfer_target_state = state
-            recommendation = report.get("recommendation", {})
-            incoming = recommendation.get("transfers_in", ()) if isinstance(recommendation, dict) else ()
+            incoming = report.recommendation.get("transfers_in", ())
             self._transfer_target_in_ids = tuple(str(player_id) for player_id in incoming)
             self._refresh_transfer_targets()
         except (DesktopEngineError, TransferTargetError) as exc:
@@ -851,11 +863,10 @@ class MainWindow(QMainWindow):
             self.analysis_targets_summary.setPlainText("Top player targets are unavailable for this production bundle.")
             self._append_engine_log(f"TOP PLAYER TARGETS: {exc}")
 
-    def _render_transfer_plans(self, report: dict, selling_prices: dict[str, int]) -> None:
+    def _render_transfer_plans(self, report: DecisionReportV2, selling_prices: dict[str, int]) -> None:
         """Render the existing engine action and its validated V1 portfolio."""
-        metadata = report.get("player_metadata", {})
-        metadata = metadata if isinstance(metadata, dict) else {}
-        plans = horizon_transfer_plans(report)
+        metadata = report.player_metadata
+        plans = horizon_transfer_plans(report.transfer_plan_payload())
         self._active_horizon_plans = plans
         self.analysis_transfer_summary.render_plans(
             plans,
@@ -893,11 +904,11 @@ class MainWindow(QMainWindow):
             "V3 will appear after a valid Decision Engine result."
         )
 
-    def _render_strategic_action(self, report: dict, state: DesktopSquadState) -> None:
+    def _render_strategic_action(self, report: DecisionReportV2, state: DesktopSquadState) -> None:
         """Render the V3 challenger without substituting V2 utility."""
-        strategic = report.get("strategic_v3")
+        strategic = (report.v3_result.to_dict() if report.v3_result is not None else None) if isinstance(report, DecisionReportV2) else report.get("strategic_v3")
         if not isinstance(strategic, dict):
-            reason = report.get("strategic_v3_error")
+            reason = report.v3_error if isinstance(report, DecisionReportV2) else report.get("strategic_v3_error")
             self.analysis_strategic_summary.setText(
                 f"V3 unavailable: {reason}" if isinstance(reason, str) and reason else "V3 unavailable."
             )
@@ -909,8 +920,7 @@ class MainWindow(QMainWindow):
         if not isinstance(action, dict) or not isinstance(hold, dict):
             self.analysis_strategic_summary.setText("V3 unavailable: report is incomplete.")
             return
-        metadata = report.get("player_metadata", {})
-        metadata = metadata if isinstance(metadata, dict) else {}
+        metadata = report.player_metadata if isinstance(report, DecisionReportV2) else report.get("player_metadata", {})
 
         def names(values) -> str:
             if not isinstance(values, (list, tuple)):
@@ -1012,25 +1022,24 @@ class MainWindow(QMainWindow):
             lines.append(f"Difference vs recommended path: {-float(delta):+.2f}")
         self.analysis_roll_summary.setText("\n".join(lines))
 
-    def _render_strategic_v2_diagnostic(self, report: dict, state: DesktopSquadState) -> None:
+    def _render_strategic_v2_diagnostic(self, report: DecisionReportV2, state: DesktopSquadState) -> None:
         """Render existing V2 utility in its own, intentionally separate metric space."""
-        action = report.get("strategic_action")
+        action = report.v2_result if isinstance(report, DecisionReportV2) else report.get("strategic_action")
         if not isinstance(action, dict):
             self._clear_strategic_action()
             return
         outgoing = tuple(str(value) for value in action.get("transfers_out", ()))
         incoming = tuple(str(value) for value in action.get("transfers_in", ()))
-        metadata = report.get("player_metadata", {})
-        metadata = metadata if isinstance(metadata, dict) else {}
+        metadata = report.player_metadata if isinstance(report, DecisionReportV2) else report.get("player_metadata", {})
 
         def names(values: tuple[str, ...]) -> str:
             return ", ".join(
                 str(row.get("name", player_id)) if isinstance((row := metadata.get(player_id, {})), dict) else player_id
                 for player_id in values
-            ) or "—"
+            ) or "Ă˘â‚¬â€ť"
 
         def money(value: object) -> str:
-            return self._money(value) if type(value) is int else "—"
+            return self._money(value) if type(value) is int else "Ă˘â‚¬â€ť"
 
         before = action.get("free_transfers_before")
         after = action.get("free_transfers_after")
@@ -1040,7 +1049,7 @@ class MainWindow(QMainWindow):
             lines.extend((
                 "Strategic action: ROLL FT",
                 "No transfer recommended now.",
-                f"Free transfers: {before if type(before) is int else '—'} → {after if type(after) is int else '—'} next GW",
+                f"Free transfers: {before if type(before) is int else 'Ă˘â‚¬â€ť'} → {after if type(after) is int else 'Ă˘â‚¬â€ť'} next GW",
                 f"Current bank: {self._money(state.bank_tenths)}",
                 "Reason: Existing Optimizer V2 strategic action retains the transfer option.",
             ))
@@ -1049,10 +1058,10 @@ class MainWindow(QMainWindow):
                 "Strategic action: MAKE TRANSFER",
                 f"OUT: {names(outgoing)}",
                 f"IN: {names(incoming)}",
-                f"Transfers used: {action.get('free_transfers_used', '—')}",
-                f"Hit: {action.get('hit_cost', '—')} pts",
+                f"Transfers used: {action.get('free_transfers_used', 'Ă˘â‚¬â€ť')}",
+                f"Hit: {action.get('hit_cost', 'Ă˘â‚¬â€ť')} pts",
                 f"Bank after: {money(action.get('resulting_bank'))}",
-                f"Free transfers: {before if type(before) is int else '—'} → {after if type(after) is int else '—'} next GW",
+                f"Free transfers: {before if type(before) is int else 'Ă˘â‚¬â€ť'} → {after if type(after) is int else 'Ă˘â‚¬â€ť'} next GW",
             ))
         if isinstance(utility, (int, float)) and not isinstance(utility, bool):
             lines.append(f"V2 utility: {float(utility):.6f}")
@@ -1086,38 +1095,29 @@ class MainWindow(QMainWindow):
 
     def _install_strategy_previews(
         self,
-        report: dict,
+        report: DecisionReportV2,
         *,
         state: DesktopSquadState,
         players: dict,
         fixtures: FixtureDisplayRepository,
     ) -> None:
-        """Install only previews serialized for the exact displayed plan.
+        """Install only typed previews for the exact strategy plan they identify.
 
-        Decision generation computes these lineups in its own read-only child
-        process.  The desktop must never turn an alternate plan into a new
-        transfer candidate or silently borrow the primary lineup.
+        Each preview carries a stable plan_id. This removes the former dependence
+        on candidate order or UI card order while preserving the existing
+        read-only lineup optimizer output.
         """
-        raw_previews = report.get("strategy_previews", {})
-        identities = report.get("strategy_preview_identities", {})
-        unavailable = report.get("strategy_unavailable", {})
-        raw_previews = raw_previews if isinstance(raw_previews, dict) else {}
-        identities = identities if isinstance(identities, dict) else {}
-        unavailable = unavailable if isinstance(unavailable, dict) else {}
         previews: dict[str, StrategyLineupPreview] = {}
-        selected = self._active_horizon_plans or horizon_transfer_plans(report)
-        strategic_v3 = report.get("strategic_v3")
-        strategic_action = strategic_v3.get("current_action") if isinstance(strategic_v3, dict) else None
-        strategic_payload = raw_previews.get("strategic")
-        if isinstance(strategic_action, dict) and isinstance(strategic_payload, dict):
+        unavailable = report.strategy_unavailable_map
+        selected = self._active_horizon_plans or horizon_transfer_plans(report.transfer_plan_payload())
+        strategic_action = report.v3_result.current_action if report.v3_result is not None else None
+        strategic_preview = report.preview_for("strategic")
+        if isinstance(strategic_action, dict) and strategic_preview is not None:
             action_out = tuple(str(value) for value in strategic_action.get("transfers_out", ()))
             action_in = tuple(str(value) for value in strategic_action.get("transfers_in", ()))
-            if (
-                tuple(str(value) for value in strategic_payload.get("transfers_out", ())) == action_out
-                and tuple(str(value) for value in strategic_payload.get("transfers_in", ())) == action_in
-            ):
+            if strategic_preview.plan_id == plan_id(action_out, action_in):
                 try:
-                    lineup = build_recommended_lineup(state, players, strategic_payload)
+                    lineup = build_recommended_lineup(state, players, strategic_preview.lineup_payload())
                     previews["strategic"] = StrategyLineupPreview(
                         starting_xi_ids=lineup.starting_xi_ids, bench_ids=lineup.bench_ids,
                         captain_id=lineup.captain_id, vice_captain_id=lineup.vice_captain_id,
@@ -1127,34 +1127,29 @@ class MainWindow(QMainWindow):
                 except RecommendedLineupError as exc:
                     self._append_engine_log(f"RECOMMENDED XI Strategic: {exc}")
             else:
-                self._append_engine_log("RECOMMENDED XI Strategic: preview transfers do not match the strategic action.")
+                self._append_engine_log("RECOMMENDED XI Strategic: serialized plan identity does not match the strategic action.")
         elif strategic_action is not None:
             reason = unavailable.get("strategic", "matching strategic preview is unavailable")
             self._append_engine_log(f"RECOMMENDED XI Strategic: {reason}")
-        elif isinstance(report.get("strategic_v3_error"), str):
-            self._append_engine_log(f"RECOMMENDED XI Strategic: V3 unavailable: {report['strategic_v3_error']}")
+        elif report.v3_error:
+            self._append_engine_log(f"RECOMMENDED XI Strategic: V3 unavailable: {report.v3_error}")
         for display_plan in selected:
             key = self._strategy_key(display_plan.title)
             if not key:
                 continue
-            payload = raw_previews.get(key)
-            if not isinstance(payload, dict):
+            preview = report.preview_for(key)
+            if preview is None:
                 reason = unavailable.get(key, "matching strategy preview is unavailable")
                 self._append_engine_log(f"RECOMMENDED XI {display_plan.title}: {reason}")
                 continue
-            serialized_identity = identities.get(key)
-            if isinstance(serialized_identity, dict) and not self._same_plan_identity(display_plan.plan, serialized_identity):
+            expected_plan_id = plan_id(tuple(display_plan.plan.transfers_out), tuple(display_plan.plan.transfers_in))
+            if preview.plan_id != expected_plan_id:
                 self._append_engine_log(
-                    f"RECOMMENDED XI {display_plan.title}: serialized identity does not match the displayed plan."
-                )
-                continue
-            if not self._same_transfers(display_plan.plan, payload):
-                self._append_engine_log(
-                    f"RECOMMENDED XI {display_plan.title}: preview transfers do not match the displayed plan."
+                    f"RECOMMENDED XI {display_plan.title}: serialized plan identity does not match the displayed plan."
                 )
                 continue
             try:
-                lineup = build_recommended_lineup(state, players, payload)
+                lineup = build_recommended_lineup(state, players, preview.lineup_payload())
             except RecommendedLineupError as exc:
                 self._append_engine_log(f"RECOMMENDED XI {display_plan.title}: {exc}")
                 continue
@@ -1194,22 +1189,21 @@ class MainWindow(QMainWindow):
             recommendation={}, first_gameweek=state.gameweek,
         )
 
-    def _format_transfer_plans(self, report: dict, selling_prices: dict[str, int]) -> str:
+    def _format_transfer_plans(self, report: DecisionReportV2, selling_prices: dict[str, int]) -> str:
         """Keep a clean, copyable text representation for history and tests."""
-        metadata = report.get("player_metadata", {})
-        metadata = metadata if isinstance(metadata, dict) else {}
+        metadata = report.player_metadata
 
         def name(player_id: str) -> str:
             row = metadata.get(player_id, {})
             return str(row.get("name", player_id)) if isinstance(row, dict) else player_id
 
         def money(value: int | None) -> str:
-            return "—" if value is None else self._money(value)
+            return "Ă˘â‚¬â€ť" if value is None else self._money(value)
 
         def signed(value: float | None) -> str:
-            return "—" if value is None else f"{value:+.2f}"
+            return "Ă˘â‚¬â€ť" if value is None else f"{value:+.2f}"
 
-        plans = horizon_transfer_plans(report)
+        plans = horizon_transfer_plans(report.transfer_plan_payload())
         if not plans:
             return "No valid transfer plan is available from the existing Decision Engine result."
         sections = []
@@ -1223,8 +1217,8 @@ class MainWindow(QMainWindow):
                 lines.append("IN: " + ", ".join(name(player_id) for player_id in plan.transfers_in))
             lines.append(
                 f"Transfers: {plan.transfer_count} | FT used: "
-                f"{plan.free_transfers_used if plan.free_transfers_used is not None else '—'} | "
-                f"Hit: {plan.hit_cost if plan.hit_cost is not None else '—'} pts | "
+                f"{plan.free_transfers_used if plan.free_transfers_used is not None else 'Ă˘â‚¬â€ť'} | "
+                f"Hit: {plan.hit_cost if plan.hit_cost is not None else 'Ă˘â‚¬â€ť'} pts | "
                 f"Bank after: {money(plan.resulting_bank)}"
             )
             lines.append(
@@ -1307,7 +1301,7 @@ class MainWindow(QMainWindow):
             if report_path is None:
                 raise DesktopEngineError("Decision report path is missing from engine output.")
             report = load_decision_report(report_path)
-            if report.get("external_mutations"):
+            if report.external_mutations:
                 raise DesktopEngineError("Decision output failed the read-only safety check.")
         except DesktopEngineError as exc:
             self._append_engine_log(f"DECISION ENGINE: {exc}")
@@ -1391,7 +1385,7 @@ class MainWindow(QMainWindow):
             if report_path is None:
                 raise DesktopEngineError("No chip report path was returned by the existing chip screen.")
             report = load_chip_report(report_path)
-            if report.get("external_mutations"):
+            if report.external_mutations:
                 raise DesktopEngineError("Chip output failed the read-only safety check.")
         except DesktopEngineError as exc:
             self._append_engine_log(f"CHIP SCREEN: {exc}")
@@ -1516,7 +1510,21 @@ class MainWindow(QMainWindow):
         if issues:
             self._append_engine_log("FPL ACCOUNT SYNC INCOMPLETE:\n" + "\n".join(f"- {issue}" for issue in issues))
             self._set_account_sync_state(AccountSyncState.ERROR, "account data incomplete"); self.account_process=None; return
-        self._clear_strategy_previews(); self._apply_state(state); self._set_account_sync_state(AccountSyncState.CONNECTED, f"prices 15/15 · FT {state.free_transfers}"); self._append_engine_log("FPL ACCOUNT SYNC: PASS")
+        planning_changed = planning_state_changed(self._current_state, state)
+        self._clear_strategy_previews()
+        if planning_changed:
+            self.latest_decision_report = None
+            self.latest_chip_report = None
+            self._active_analysis_run_id = None
+            self._active_analysis_state = None
+            self._full_analysis_bundle = None
+            self._clear_captaincy_result()
+            self._clear_transfer_targets()
+            self.analysis_chip_summary.setText("Planning context changed after FPL sync — run a new analysis.")
+            self._append_engine_log("PLANNING CONTEXT: active decision and chip results cleared after account state changed.")
+        self._apply_state(state)
+        self._set_account_sync_state(AccountSyncState.CONNECTED, f"prices 15/15 · FT {state.free_transfers}")
+        self._append_engine_log("FPL ACCOUNT SYNC: PASS")
         self.statusBar().showMessage(f"FPL account synchronized: 15 players, FT {state.free_transfers}, bank £{state.bank_tenths/10:.1f}m.",12000); self.account_process=None
 
     def validate_current_state(self) -> bool:

@@ -1,6 +1,7 @@
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -80,19 +81,33 @@ def _bundle_and_state(tmp_path, *, simulation_count=10_000):
     }
     (run / "shadow_projection_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
     (run / "player_projections.json").write_text("[]", encoding="utf-8")
-    (run / "run_manifest.json").write_text(json.dumps({
-        "season": "2026/27", "target_gameweek": 5,
-        "simulation": {
-            "simulations_per_fixture": simulation_count,
-            "simulation_mode": "PRODUCTION",
-            "simulator_version": "fixture_simulator_v22",
-        },
-    }), encoding="utf-8")
     (run / "prediction_context.json").write_text(json.dumps({"target_season": "2026/27", "target_gameweek": 5}), encoding="utf-8")
     (run / "current_players.json").write_text(json.dumps([
         {"player_id": row["player_id"], "display_name": f"Player {row['player_id']}"}
         for row in players + candidates
     ]), encoding="utf-8")
+    (run / "fixture_horizon.json").write_text("[]", encoding="utf-8")
+    (run / "minutes.json").write_text("[]", encoding="utf-8")
+    artifact_names = {
+        "prediction_context": "prediction_context.json",
+        "shadow_bundle": "shadow_projection_bundle.json",
+        "current_players": "current_players.json",
+        "fixture_horizon": "fixture_horizon.json",
+        "minutes": "minutes.json",
+    }
+    (run / "run_manifest.json").write_text(json.dumps({
+        "season": "2026/27", "target_gameweek": 5,
+        "optimizer_rule_version": 1, "scoring_rule_version": 1,
+        "simulation": {
+            "simulations_per_fixture": simulation_count,
+            "simulation_mode": "PRODUCTION",
+            "simulator_version": "fixture_simulator_v22",
+        },
+        "artifacts": {
+            key: {"path": name, "sha256": sha256((run / name).read_bytes()).hexdigest()}
+            for key, name in artifact_names.items()
+        },
+    }), encoding="utf-8")
     state = DesktopSquadState(
         season="2026/27", gameweek=5, bank_tenths=20, free_transfers=1,
         player_ids=[row["player_id"] for row in players], chips_used=default_chip_state(),
@@ -112,8 +127,11 @@ def test_decision_bridge_runs_existing_engine_and_preserves_account_state(tmp_pa
         desktop_state_path=source, prediction_bundle_path=bundle, output_dir=output, project_root=Path(__file__).resolve().parents[1],
     )
     report = load_decision_report(report_path)
+    assert report.schema_version == "decision_report_v2"
     assert source.read_text(encoding="utf-8") == original
     assert report["external_mutations"] == []
+    assert len(report["context_id"]) == 64
+    assert report["planning_context"]["context_id"] == report["context_id"]
     assert report["recommendation"]["transfers_out"] == ["p14"]
     assert report["recommendation"]["transfers_in"] == ["candidate"]
     assert report["feasible_plans"]

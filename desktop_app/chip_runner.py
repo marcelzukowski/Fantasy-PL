@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
+from hashlib import sha256
 from math import prod
 from pathlib import Path
 import subprocess
@@ -22,8 +23,10 @@ from fpl_engine.decision.chip_strategy import (
 )
 from fpl_engine.optimizer import chip_available
 from fpl_engine.optimizer.v2 import OptimizerV2Config, generate_candidates
+from fpl_engine.reports import DecisionReportV2, ChipReportV2, ReportSchemaError, parse_decision_report
 from fpl_engine.shadow import ShadowRunError, load_squad_state
 
+from .decision_orchestration import planning_context_for_state
 from .decision_runner import DesktopDecisionError, _object, shadow_input
 
 
@@ -233,11 +236,18 @@ def _minutes_appearance(path: Path, projections, *, horizon: int) -> dict[tuple[
     return result
 
 
-def _validate_decision(report_path: Path, *, season: str, gameweek: int, prediction_timestamp: str) -> None:
-    report = _object(report_path, "desktop decision report")
-    if report.get("external_mutations"):
+def _validate_decision(report_path: Path, *, season: str, gameweek: int, prediction_timestamp: str, context_id: str) -> DecisionReportV2:
+    try:
+        report = parse_decision_report(_object(report_path, "desktop decision report"))
+    except ReportSchemaError as exc:
+        raise DesktopChipError(str(exc)) from exc
+    if report.external_mutations:
         raise DesktopChipError("The decision report failed the read-only safety check.")
-    shadow_path = report.get("shadow_report")
+    if report.planning_context is None or report.context_id is None:
+        raise DesktopChipError("Saved decision is LEGACY / UNVERIFIED. Run a new analysis.")
+    if report.context_id != context_id:
+        raise DesktopChipError("Saved decision does not match the current planning context. Run a new analysis.")
+    shadow_path = report.shadow_report
     if not shadow_path:
         raise DesktopChipError("The compatible decision report is incomplete.")
     shadow = _object(Path(shadow_path), "shadow decision report")
@@ -246,6 +256,7 @@ def _validate_decision(report_path: Path, *, season: str, gameweek: int, predict
         raise DesktopChipError("The decision report does not match the selected production bundle.")
     if shadow.get("external_mutations"):
         raise DesktopChipError("The compatible decision output is not read-only.")
+    return report
 
 
 def _entry_payload(entry) -> dict:
@@ -275,8 +286,21 @@ def _exact_projection_rows(projections):
 def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path: Path, decision_report_path: Path, output_dir: Path, project_root: Path) -> Path:
     print("CHIP_PROGRESS=loading data", flush=True)
     desktop = _object(desktop_state_path, "desktop squad state")
+    try:
+        planning_context = planning_context_for_state(
+            project_root, desktop, prediction_bundle_path, require_canonical_path=False,
+        )
+    except Exception as exc:
+        raise DesktopChipError(str(exc)) from exc
     bundle = _object(prediction_bundle_path, "prediction bundle")
-    _validate_decision(decision_report_path, season=str(bundle.get("season")), gameweek=int(bundle.get("current_gameweek", -1)), prediction_timestamp=str(bundle.get("prediction_timestamp")))
+    _validate_decision(
+        decision_report_path,
+        season=str(bundle.get("season")),
+        gameweek=int(bundle.get("current_gameweek", -1)),
+        prediction_timestamp=str(bundle.get("prediction_timestamp")),
+        context_id=planning_context.context_id,
+    )
+    decision_sha256 = sha256(Path(decision_report_path).read_bytes()).hexdigest()
     try:
         payload = shadow_input(desktop, bundle)
     except DesktopDecisionError as exc:
@@ -435,7 +459,7 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
         "available_chips": list(available),
     }
     result = {
-        "report_version": 1, "mode": "ADVISORY / READ ONLY", "external_mutations": [],
+        "report_version": 2, "mode": "ADVISORY / READ ONLY", "external_mutations": [], "context_id": planning_context.context_id, "planning_context": planning_context.to_dict(), "decision_report_sha256": decision_sha256,
         "prediction_bundle": str(prediction_bundle_path), "decision_report": str(decision_report_path),
         "season": state.season, "gameweek": state.current_gameweek,
         "prediction_timestamp": state.prediction_timestamp.isoformat(), "recommendation": recommendation,
@@ -476,8 +500,27 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
         },
     }
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
-    destination = output_dir / f"desktop-chip-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
-    destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    created_at = datetime.now(timezone.utc)
+    destination = output_dir / f"desktop-chip-{created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    try:
+        typed_report = ChipReportV2.create(
+            report_id=destination.stem,
+            created_at=created_at,
+            planning_context=planning_context,
+            decision_report_path=str(decision_report_path),
+            decision_report_sha256=decision_sha256,
+            mode=result["mode"],
+            external_mutations=result["external_mutations"],
+            recommendation=result["recommendation"],
+            evaluations=result["evaluations"],
+            strategic=result["strategic"],
+            chip_period=result["chip_period"],
+            timing_policy_version=result["timing_policy_version"],
+            candidate_generation=result["candidate_generation"],
+        )
+    except ReportSchemaError as exc:
+        raise DesktopChipError(f"Chip report schema validation failed: {exc}") from exc
+    destination.write_text(json.dumps(typed_report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return destination
 
 

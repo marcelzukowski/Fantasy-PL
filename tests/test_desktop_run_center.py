@@ -256,14 +256,11 @@ def test_load_saved_analysis_restores_complete_and_partial_outputs_without_start
         window.selected_projection_bundle = bundle
         window.selected_analysis_run = saved
         monkeypatch.setattr(window, "_selected_bundle_for_state", lambda _state: bundle)
+        assert saved.legacy_unverified
         window.load_selected_analysis()
-        assert "ROLL FREE TRANSFER" in window.analysis_transfer_summary.text()
-        assert "Captain: Player 11" in window.analysis_captain_summary.text()
-        if with_chip:
-            assert "Recommended: NO CHIP / ROLL" in window.analysis_chip_summary.text()
-        else:
-            assert "not completed" in window.analysis_chip_summary.text()
-        assert window.latest_decision_report == report_path
+        assert "LEGACY / UNVERIFIED" in window.engine_log.toPlainText()
+        assert "Saved analysis could not be loaded safely" in window.statusBar().currentMessage()
+        assert window.latest_decision_report is None
         assert window.engine_process is None and window.decision_process is None and window.chip_process is None
         assert (window.state_path.read_bytes() if window.state_path.exists() else None) == original_state
         assert manifest.exists()

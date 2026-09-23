@@ -314,7 +314,23 @@ def preserve_account_state(
         ),
 
         source=source,
+        updated_at=(previous.updated_at if same_squad else current.updated_at),
     )
+
+
+def planning_state_changed(previous: DesktopSquadState | None, current: DesktopSquadState) -> bool:
+    """Compare only account fields that can invalidate a planning result."""
+    if previous is None:
+        return False
+    def fingerprint(state: DesktopSquadState) -> tuple:
+        players = tuple(sorted(str(player_id) for player_id in state.player_ids))
+        return (
+            str(state.season), int(state.gameweek), players, int(state.bank_tenths),
+            int(state.free_transfers),
+            tuple(sorted((player_id, int(state.selling_prices_tenths.get(player_id, -1))) for player_id in players)),
+            tuple(sorted((str(key), bool(value)) for key, value in state.chips_used.items())),
+        )
+    return fingerprint(previous) != fingerprint(current)
 
 
 def load_state(
