@@ -8,6 +8,7 @@ itself, infer FPL account state, or call any write endpoint.
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from fpl_engine.models.projections import GameweekPlayerProjection, PlayerProjection
+from fpl_engine.planning import DecisionInput
 from fpl_engine.optimizer import (
     ChipState, Optimizer, OptimizerError, OptimizerRules, OptimizerV2,
     OptimizerV2Config, Recommendation, SquadPlayer, SquadState, validate_squad,
@@ -267,9 +269,12 @@ def _validate_freshness(value: object, prediction_timestamp: datetime) -> list[s
 
 def _recommendations(
     state: SquadState, pool: tuple[SquadPlayer, ...], projections: Mapping[str, PlayerProjection],
-    rules: OptimizerRules,
-) -> dict[str, Recommendation]:
-    production = Optimizer(rules)
+    rules: OptimizerRules, *, decision_input: DecisionInput | None = None,
+) -> tuple[dict[str, Recommendation], dict[str, object]]:
+    lineup_provider = None
+    if decision_input is not None:
+        lineup_provider = lambda working, **options: decision_input.lineup_for(working, **options)
+    production = Optimizer(rules, lineup_provider=lineup_provider)
     greedy_rows = {player_id: replace(row, weighted_ev_next_6=row.ev_next_1) for player_id, row in projections.items()}
     try:
         v2_config = OptimizerV2Config.from_rules(rules)
@@ -277,11 +282,15 @@ def _recommendations(
         # The active rules document predates the V2-specific section.  Its
         # frozen V2 defaults are still a challenger, never the shadow default.
         v2_config = OptimizerV2Config()
-    return {
-        "greedy_1gw": production.recommend(state, greedy_rows, pool, max_transfers=1),
-        "optimizer_v1": production.recommend(state, projections, pool, max_transfers=2),
-        "optimizer_v2": OptimizerV2(rules, v2_config).recommend(state, projections, pool, max_transfers=2),
-    }
+    greedy = production.recommend(state, greedy_rows, pool, max_transfers=1)
+    v1 = production.recommend(state, projections, pool, max_transfers=2)
+    v1_diagnostics = production.last_search_diagnostics.snapshot() if production.last_search_diagnostics else None
+    v2_engine = OptimizerV2(rules, v2_config, lineup_provider=lineup_provider)
+    v2 = v2_engine.recommend(state, projections, pool, max_transfers=2)
+    return ({"greedy_1gw": greedy, "optimizer_v1": v1, "optimizer_v2": v2}, {
+        "optimizer_v1": v1_diagnostics,
+        "optimizer_v2": dict(v2_engine.last_search_diagnostics),
+    })
 
 
 def _transfer_impacts(
@@ -323,12 +332,23 @@ def run_shadow(
     squad_state_path: Path, *, project_root: Path, output_dir: Path | None = None,
     clock: Callable[[], datetime] | None = None,
     prediction_bundle_path: Path | None = None, allow_diagnostic: bool = False,
+    decision_input: DecisionInput | None = None,
 ) -> tuple[Path, Path]:
-    state, pool, projections, pipeline, warnings, rules, freshness = load_squad_state(
-        squad_state_path, project_root=project_root,
-        prediction_bundle_path=prediction_bundle_path, allow_diagnostic=allow_diagnostic,
-    )
-    recommendations = _recommendations(state, pool, projections, rules)
+    # Desktop callers may pass the single validated run input.  Standalone CLI
+    # usage remains byte-for-byte compatible and loads the legacy request path.
+    if decision_input is None:
+        state, pool, projections, pipeline, warnings, rules, freshness = load_squad_state(
+            squad_state_path, project_root=project_root,
+            prediction_bundle_path=prediction_bundle_path, allow_diagnostic=allow_diagnostic,
+        )
+    else:
+        state, pool, projections, pipeline, rules = (decision_input.state, decision_input.player_pool,
+            decision_input.projections, dict(decision_input.pipeline), decision_input.rules)
+        warnings, freshness = list(decision_input.warnings), decision_input.freshness
+    with (decision_input.policy_timer("greedy_v1_v2") if decision_input is not None else nullcontext()):
+        recommendations, optimizer_diagnostics = _recommendations(
+            state, pool, projections, rules, decision_input=decision_input,
+        )
     try:
         OptimizerV2Config.from_rules(rules)
     except KeyError:
@@ -374,6 +394,9 @@ def run_shadow(
         "owned_player_projections": owned,
         "default_policy": "greedy_1gw",
         "recommendations": {name: _recommendation_payload(item, projections) for name, item in recommendations.items()},
+        # Diagnostics are machine-only provenance for a run-scoped shared input.
+        "decision_input_diagnostics": decision_input.diagnostics.snapshot() if decision_input is not None else None,
+        "legacy_optimizer_diagnostics": optimizer_diagnostics,
     }
     machine.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     greedy = report["recommendations"]["greedy_1gw"]

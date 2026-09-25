@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import pytest
 from fpl_engine.planning.context import PLANNING_CONTEXT_SCHEMA, PlanningContext, REQUIRED_ARTIFACTS
+from fpl_engine.planning import ChipForecastStatus, ChipOpportunityForecast, write_chip_opportunity_forecast
 from fpl_engine.reports import AnalysisManifestV2, DecisionReportV2, ReportReference
 from fpl_engine.validation.replay_archive import (
  ArchiveConflictError, ArchiveStatus, ReplayArchiveError, archive_analysis, archive_status,
@@ -21,7 +22,9 @@ def _root(tmp_path,*,deadline=DEADLINE,decision_at=AT+timedelta(minutes=1),analy
  manifest=run/'run_manifest.json'; manifest.write_text(json.dumps({'artifacts':artifacts}),encoding='utf-8'); manifest_sha=sha256(manifest.read_bytes()).hexdigest()
  ids=tuple(f'p{i}' for i in range(15)); context=PlanningContext(PLANNING_CONTEXT_SCHEMA,'2026/27',6,deadline.isoformat(),ids,tuple((x,50) for x in ids),10,2,(('wildcard_h1',False),),'run-1',AT.isoformat(),'v22',('v22',),512,1,1,manifest_sha,tuple((name,meta['sha256']) for name,meta in artifacts.items()),AT.isoformat(),AT.isoformat(),())
  preview={'transfers_out':[],'transfers_in':[],'resulting_bank':10,'free_transfers_after':3,'starting_xi':list(ids[:11]),'bench_order':list(ids[11:]),'captain':'p0','vice_captain':'p1'}
- decision=DecisionReportV2.create(report_id='d',created_at=decision_at,planning_context=context,mode='READ ONLY',external_mutations=[],shadow_report=None,recommendation={'transfers_out':[],'transfers_in':[],'roll_free_transfer':True},feasible_plans=[],strategic_v2={'action':'ROLL_FT','transfers_out':[],'transfers_in':[]},strategic_v3={'current_action':{'action':'HOLD','transfers_out':[],'transfers_in':[]},'path':[]},strategic_v3_error=None,strategy_previews={'short_term':preview},strategy_preview_identities={},strategy_unavailable={},player_metadata={})
+ forecast=ChipOpportunityForecast('chip_opportunity_forecast_v1',context.context_id,decision_at.isoformat(),6,6,'chip_opportunity_forecast_v1',(),{'prediction_timestamp':AT.isoformat(),'projection_run_id':'run-1','production_influence':False},{'evaluated_gameweeks':[6]},'LOW',(),ChipForecastStatus.UNAVAILABLE,{'cache_hits':0})
+ forecast_path=write_chip_opportunity_forecast(root,forecast); forecast_ref={'path':str(forecast_path.relative_to(root)),'sha256':sha256(forecast_path.read_bytes()).hexdigest()}
+ decision=DecisionReportV2.create(report_id='d',created_at=decision_at,planning_context=context,mode='READ ONLY',external_mutations=[],shadow_report=None,recommendation={'transfers_out':[],'transfers_in':[],'roll_free_transfer':True},feasible_plans=[],strategic_v2={'action':'ROLL_FT','transfers_out':[],'transfers_in':[]},strategic_v3={'current_action':{'action':'HOLD','transfers_out':[],'transfers_in':[]},'path':[]},strategic_v3_error=None,strategy_previews={'short_term':preview},strategy_preview_identities={},strategy_unavailable={},player_metadata={},chip_opportunity_forecast=forecast_ref)
  decision_path=root/'data/processed/desktop_decisions/d.json'; decision_path.parent.mkdir(parents=True); decision_path.write_text(json.dumps(decision.to_dict(),sort_keys=True),encoding='utf-8'); ref=ReportReference(str(decision_path.relative_to(root)),sha256(decision_path.read_bytes()).hexdigest())
  analysis=AnalysisManifestV2.create(analysis_run_id='a',created_at=analysis_at,status='COMPLETE',season='2026/27',gameweek=6,projection_run_id='run-1',decision_report=decision,decision_reference=ref,chip_report=None,chip_reference=None,recommended_xi_available=True,captaincy_available=True,display_state=None)
  analysis_path=root/'data/processed/desktop_analyses/2026-27/a.json'; analysis_path.parent.mkdir(parents=True); analysis_path.write_text(json.dumps(analysis.to_dict(),sort_keys=True),encoding='utf-8')
@@ -67,3 +70,10 @@ def test_future_dated_snapshot_is_rejected(tmp_path):
  from fpl_engine.validation.replay_archive import OptionalSnapshotReference, SnapshotStatus
  future=OptionalSnapshotReference(SnapshotStatus.AVAILABLE,'data/x.json','a'*64,(AT+timedelta(minutes=1)).isoformat(),'provider',{},False)
  with pytest.raises(ReplayArchiveError): replace(case,price_signals=future)
+
+
+def test_archive_preserves_exact_chip_forecast_reference(tmp_path):
+ root,analysis,*_= _root(tmp_path); case=build_archive_case(root,analysis)
+ assert case.chip_opportunity_forecast.status.value == "AVAILABLE"
+ target=write_archive_case(root,case)
+ assert validate_archive_case(root,target).checks["chip_opportunity_forecast"]

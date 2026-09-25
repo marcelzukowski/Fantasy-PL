@@ -154,10 +154,12 @@ def generate_candidates(
 class OptimizerV2:
     VERSION = "optimizer_v2"
 
-    def __init__(self, rules: OptimizerRules, config: OptimizerV2Config = OptimizerV2Config()):
+    def __init__(self, rules: OptimizerRules, config: OptimizerV2Config = OptimizerV2Config(), *, lineup_provider=None):
         self.rules = rules
         self.config = config
+        self.lineup_provider = lineup_provider
         self.last_diagnostic: DecisionDiagnostic | None = None
+        self.last_search_diagnostics: dict[str, object] = {}
 
     def recommend(
         self, state: SquadState, projections: Mapping[str, PlayerProjection],
@@ -166,6 +168,7 @@ class OptimizerV2:
         if chip is not None:
             raise OptimizerError("OptimizerV2 transfer planner expects chip timing to be evaluated separately")
         started = time.perf_counter()
+        pool = tuple(pool)
         validate_squad(state, self.rules)
         timestamp = validate_projection_contract(state, projections, (p.player_id for p in state.players))
         candidates, candidate_report = generate_candidates(state, pool, projections, self.config)
@@ -183,7 +186,8 @@ class OptimizerV2:
         working = SquadState(best.resulting_players, transfer.bank_after, transfer.free_transfers_after,
                              state.chips, state.current_gameweek, state.season, state.rule_version,
                              state.prediction_timestamp)
-        lineup = optimize_lineup(working, projections, self.rules)
+        lineup = (self.lineup_provider(working) if self.lineup_provider is not None
+                  else optimize_lineup(working, projections, self.rules))
         alternatives = tuple(Alternative(
             "ROLL_FT" if plan.transfer.roll_ft else "TRANSFER", plan.objective,
             plan.transfer.transfers_out, plan.transfer.transfers_in,
@@ -211,6 +215,12 @@ class OptimizerV2:
         uncertainty = sum(float(projections[x].projection_uncertainty) for x in involved)/len(involved) if involved else 0.0
         transfer_plans = [plan for plan in plans if not plan.transfer.roll_ft]
         roll = next(plan for plan in plans if plan.transfer.roll_ft)
+        self.last_search_diagnostics = {
+            "candidate_pool_size": len(tuple(pool)),
+            "generated_candidates": candidate_report.selected,
+            "evaluated_plans": len(plans),
+            "runtime_seconds": time.perf_counter() - started,
+        }
         self.last_diagnostic = DecisionDiagnostic(
             action, roll.objective, max((plan.objective for plan in transfer_plans), default=None),
             transfer.gross_gain, transfer.hit_cost, transfer.net_gain, len(transfer.transfers_in),

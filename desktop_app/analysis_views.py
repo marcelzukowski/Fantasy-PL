@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from .transfer_plans import HorizonTransferPlan
 from .transfer_targets import TransferTarget
+from .analysis_trust import AnalysisTrustViewModel
 
 
 def _clear_layout(layout: QVBoxLayout | QHBoxLayout | QGridLayout) -> None:
@@ -39,6 +40,52 @@ class AnalysisSummary(QPlainTextEdit):
 
     def setText(self, text: str) -> None:
         self.setPlainText(text)
+
+
+class AnalysisTrustCard(QFrame):
+    """Compact Qt renderer for the non-Qt AnalysisTrustViewModel."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("AnalysisTrustCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(4)
+        top = QHBoxLayout()
+        title = QLabel("Data status")
+        title.setObjectName("AnalysisCardTitle")
+        self.badge = QLabel("PARTIAL")
+        self.badge.setObjectName("AnalysisTrustBadge")
+        top.addWidget(title)
+        top.addStretch(1)
+        top.addWidget(self.badge)
+        self.detail = QLabel()
+        self.detail.setObjectName("AnalysisTrustDetail")
+        self.detail.setWordWrap(True)
+        self.optional = QLabel()
+        self.optional.setObjectName("AnalysisTrustOptional")
+        self.optional.setWordWrap(True)
+        self.warning = QLabel()
+        self.warning.setObjectName("AnalysisTrustWarning")
+        self.warning.setWordWrap(True)
+        layout.addLayout(top)
+        layout.addWidget(self.detail)
+        layout.addWidget(self.optional)
+        layout.addWidget(self.warning)
+
+    def set_model(self, model: AnalysisTrustViewModel) -> None:
+        self.badge.setText(model.badge_text)
+        self.badge.setProperty("trustStatus", model.status.value.lower())
+        self.badge.style().unpolish(self.badge)
+        self.badge.style().polish(self.badge)
+        deadline = ""
+        if model.deadline is not None and model.selected_gameweek is not None:
+            deadline = f" · GW{model.selected_gameweek} deadline: {model.deadline.astimezone().strftime('%d %b %H:%M')}"
+        self.detail.setText(f"{model.detail}{deadline}")
+        self.optional.setText(" · ".join(model.optional_notes))
+        self.optional.setVisible(bool(model.optional_notes))
+        self.warning.setText(model.warning or "")
+        self.warning.setVisible(bool(model.warning))
 
 
 class DetailSummary(QFrame):

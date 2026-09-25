@@ -42,11 +42,12 @@ from .run_center import (
     verify_analysis_report_references,
 )
 from .orchestration import DesktopEngineError, latest_prediction_run, projection_arguments, projection_run_summary, resolve_engine_python
-from .analysis_views import DetailSummary, TransferPlanCards, TransferTargetsTable
+from .analysis_views import AnalysisTrustCard, DetailSummary, TransferPlanCards, TransferTargetsTable
 from .transfer_plans import horizon_transfer_plans
 from .squad_pitch import SquadPitchWidget, StrategyLineupPreview
 from .stepper_field import StepperField
 from .state import POSITION_COUNTS, DesktopSquadState, DesktopStateError, load_state, planning_state_changed, preserve_account_state, save_state, validate_state
+from .analysis_trust import AnalysisTrustInputs, ChipTrustStatus, build_analysis_trust
 from .theme import apply_app_theme
 from .transfer_targets import (
     TransferTarget,
@@ -99,6 +100,8 @@ class MainWindow(QMainWindow):
         self.selected_analysis_run: AnalysisRun | None = None
         self._active_analysis_run_id: str | None = None
         self._active_analysis_state: DesktopSquadState | None = None
+        self._active_analysis_is_historical = False
+        self._trust_invalidation_reason: str | None = None
         self._active_horizon_plans = ()
         self._strategy_previews: dict[str, object] = {}
         self._strategy_preview_context: tuple[DesktopSquadState, dict, FixtureDisplayRepository] | None = None
@@ -112,7 +115,12 @@ class MainWindow(QMainWindow):
         self._refresh_actionable_gameweek_minimum()
         self.season_box.currentTextChanged.connect(self._refresh_run_center)
         self.gw_spin.valueChanged.connect(self._refresh_run_center)
+        self.ft_spin.valueChanged.connect(self._refresh_analysis_trust)
+        self.bank_spin.valueChanged.connect(self._refresh_analysis_trust)
+        for checkbox in self.chip_boxes.values():
+            checkbox.toggled.connect(self._refresh_analysis_trust)
         self._refresh_run_center()
+        self._refresh_analysis_trust()
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -255,6 +263,8 @@ class MainWindow(QMainWindow):
         center_layout.addWidget(action_buttons, 4, 1, 1, 3)
         center_layout.setColumnStretch(1, 1)
         layout.addWidget(run_center)
+        self.analysis_trust_card = AnalysisTrustCard()
+        layout.addWidget(self.analysis_trust_card)
         def card(title_text, body):
             frame = QFrame(); frame.setObjectName("AnalysisCard"); box = QVBoxLayout(frame)
             title_label = QLabel(title_text); title_label.setObjectName("AnalysisCardTitle")
@@ -284,10 +294,14 @@ class MainWindow(QMainWindow):
             "Chip strategy",
             DetailSummary("Chip recommendation will appear here."),
         )
-        self.analysis_transfer_card = transfer; self.analysis_captain_card = captain; self.analysis_chip_card = chips
+        outlook, self.analysis_chip_outlook_summary = card(
+            "Chip opportunity outlook",
+            DetailSummary("Strategic chip forecast will appear after a valid Decision Engine result."),
+        )
+        self.analysis_transfer_card = transfer; self.analysis_captain_card = captain; self.analysis_chip_card = chips; self.analysis_chip_outlook_card = outlook
         transfer.setMinimumHeight(360)
-        captain.setMinimumHeight(205); chips.setMinimumHeight(205)
-        side_cards = QVBoxLayout(); side_cards.setSpacing(10); side_cards.addWidget(captain); side_cards.addWidget(chips)
+        captain.setMinimumHeight(205); chips.setMinimumHeight(205); outlook.setMinimumHeight(150)
+        side_cards = QVBoxLayout(); side_cards.setSpacing(10); side_cards.addWidget(captain); side_cards.addWidget(chips); side_cards.addWidget(outlook)
         results.addWidget(transfer, 3); results.addLayout(side_cards, 1); layout.addLayout(results, 2)
         roll, self.analysis_roll_summary = card(
             "If you roll",
@@ -366,6 +380,84 @@ class MainWindow(QMainWindow):
     def _short_simulation_count(value: int) -> str:
         return f"{value // 1000}k" if value % 1000 == 0 else f"{value:,}"
 
+    def _analysis_deadline(self, gameweek: int | None):
+        if gameweek is None:
+            return None
+        return next((event.deadline for event in load_cached_event_deadlines(self.root) if event.gameweek == gameweek), None)
+
+    def _chip_trust_status(self) -> ChipTrustStatus:
+        states = {
+            ChipRunState.RUNNING: ChipTrustStatus.RUNNING,
+            ChipRunState.SUCCESS: ChipTrustStatus.COMPLETE,
+            ChipRunState.CANCELLED: ChipTrustStatus.CANCELLED,
+            ChipRunState.ERROR: ChipTrustStatus.ERROR,
+        }
+        return states.get(self.chip_run_state, ChipTrustStatus.NOT_RUN)
+
+    def _refresh_analysis_trust(self) -> None:
+        """Refresh from local reports only; this method never starts a provider call."""
+        if not hasattr(self, "analysis_trust_card"):
+            return
+        decision = chip = None
+        historical = self._active_analysis_is_historical
+        active = self.selected_analysis_run if self.selected_analysis_run and self.selected_analysis_run.analysis_run_id == self._active_analysis_run_id else None
+        if self.latest_decision_report is not None:
+            try:
+                decision = load_decision_report(self.latest_decision_report)
+            except DesktopEngineError:
+                pass
+        elif active is not None and active.decision_report is not None:
+            try:
+                decision = load_decision_report(active.decision_report)
+            except DesktopEngineError:
+                pass
+        if self.latest_chip_report is not None:
+            try:
+                chip = load_chip_report(self.latest_chip_report)
+            except DesktopEngineError:
+                pass
+        state = self._state_from_ui() if self.player_boxes else self._current_state
+        current_context = None
+        artifact_verified: bool | None = None
+        artifact_error = None
+        projection_changed = False
+        material_changed = bool(self._trust_invalidation_reason)
+        if decision is not None and decision.planning_context is not None:
+            projection_changed = self.selected_projection_bundle is None or self.selected_projection_bundle.parent.name != decision.planning_context.projection_run_id
+            if not historical:
+                try:
+                    bundle = self._selected_bundle_for_state(state)
+                    current_context = planning_context_for_state(self.root, state, bundle)
+                    artifact_verified = True
+                except DesktopEngineError as exc:
+                    artifact_verified = False
+                    artifact_error = str(exc)
+                material_changed = material_changed or planning_state_changed(self._active_analysis_state, state)
+            elif active is not None:
+                try:
+                    verify_analysis_report_references(self.root, active)
+                    artifact_verified = True
+                except RunCenterError as exc:
+                    artifact_verified = False
+                    artifact_error = str(exc)
+        selected_run = self._projection_for_id(self.selected_projection_bundle.parent.name) if self.selected_projection_bundle is not None else None
+        model = build_analysis_trust(AnalysisTrustInputs(
+            decision=decision, chip=chip, current_context=current_context,
+            selected_season=state.season if state is not None else None,
+            selected_gameweek=state.gameweek if state is not None else None,
+            analysis_timestamp=active.timestamp.isoformat() if active is not None else (decision.created_at if decision else None),
+            fpl_sync_timestamp=getattr(state, "updated_at", None),
+            deadline=self._analysis_deadline(state.gameweek if state is not None else None),
+            artifact_verified=artifact_verified, artifact_error=artifact_error,
+            chip_state=self._chip_trust_status(),
+            market_status=selected_run.market_shadow_status if selected_run is not None else None,
+            market_coverage=selected_run.market_shadow_coverage if selected_run is not None else None,
+            historical=historical, material_state_changed=material_changed,
+            projection_changed=projection_changed,
+            report_status=active.status if active is not None else None,
+            chip_forecast_status=("AVAILABLE" if decision is not None and decision.chip_opportunity_forecast is not None else "UNAVAILABLE"),
+        ))
+        self.analysis_trust_card.set_model(model)
     def _projection_for_id(self, run_id: str | None) -> ProjectionRun | None:
         return next((run for run in self._projection_runs if run.run_id == run_id), None)
 
@@ -426,6 +518,7 @@ class MainWindow(QMainWindow):
             self.analysis_run_detail.setText("No saved COMPLETE or PARTIAL analysis for the selected projection run.")
             self.load_analysis_button.setEnabled(False)
         self.analysis_run_box.blockSignals(False)
+        self._refresh_analysis_trust()
 
     def _projection_run_changed(self, _index: int) -> None:
         self._clear_strategy_previews()
@@ -436,6 +529,7 @@ class MainWindow(QMainWindow):
         self.latest_projection_run = run.run_dir
         self.projection_run_detail.setText(run.detail)
         self._refresh_analysis_selector()
+        self._refresh_analysis_trust()
 
     def _refresh_analysis_selector(self) -> None:
         state = self._state_from_ui()
@@ -457,6 +551,7 @@ class MainWindow(QMainWindow):
             self.analysis_run_detail.setText("No saved COMPLETE or PARTIAL analysis for the selected projection run.")
             self.load_analysis_button.setEnabled(False)
         self.analysis_run_box.blockSignals(False)
+        self._refresh_analysis_trust()
 
     def _analysis_run_changed(self, _index: int) -> None:
         self._clear_strategy_previews()
@@ -471,6 +566,7 @@ class MainWindow(QMainWindow):
             if compatible else "This analysis belongs to a different projection run."
         )
         self.load_analysis_button.setEnabled(compatible and run.status in {"COMPLETE", "PARTIAL"})
+        self._refresh_analysis_trust()
 
     def use_selected_projection_run(self) -> None:
         run = self._projection_for_id(self.projection_run_box.currentData())
@@ -488,6 +584,7 @@ class MainWindow(QMainWindow):
         self.latest_projection_run = run.run_dir
         self.projection_run_detail.setText(run.detail)
         self._refresh_analysis_selector()
+        self._refresh_analysis_trust()
         self.statusBar().showMessage("Selected production run is active.", 7000)
 
     def _selected_bundle_for_state(self, state: DesktopSquadState) -> Path:
@@ -499,6 +596,8 @@ class MainWindow(QMainWindow):
         self._clear_strategy_previews()
         self._active_analysis_run_id = "desktop-analysis-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         self._active_analysis_state = state
+        self._active_analysis_is_historical = False
+        self._trust_invalidation_reason = None
         self._full_analysis_bundle = bundle.parent
         self.latest_decision_report = None
         self.latest_chip_report = None
@@ -577,7 +676,10 @@ class MainWindow(QMainWindow):
         self._full_analysis_bundle = bundle.parent
         self._active_analysis_run_id = analysis.analysis_run_id
         self._active_analysis_state = analysis.squad_state
+        self._active_analysis_is_historical = True
+        self._trust_invalidation_reason = None
         self._set_full_analysis_state(FullAnalysisState(analysis.status), detail="Saved analysis loaded without recalculation.")
+        self._refresh_analysis_trust()
         self.statusBar().showMessage("Saved analysis loaded.", 7000)
 
     def _state_from_ui(self) -> DesktopSquadState:
@@ -645,6 +747,7 @@ class MainWindow(QMainWindow):
     def _refresh_pitch_view(self, *args) -> None:
         state = self._state_from_ui() if self.player_boxes else self._current_state
         self.pitch_widget.refresh(self.player_boxes,self.players,state=state,first_gameweek=self.gw_spin.value())
+        self._refresh_analysis_trust()
 
     def _refresh_account_status(self, state=None) -> None:
         if state is None:
@@ -710,6 +813,7 @@ class MainWindow(QMainWindow):
         self.cancel_chip_button.setEnabled(state is ChipRunState.RUNNING)
         self.retry_chip_button.setEnabled(state in {ChipRunState.ERROR, ChipRunState.CANCELLED} and self.latest_decision_report is not None)
         self.statusBar().showMessage("Chip screen" if detail is None else detail, 10000)
+        self._refresh_analysis_trust()
 
     def _set_full_analysis_state(self, state: FullAnalysisState, *, detail: str | None = None) -> None:
         self.full_analysis_state = state
@@ -807,6 +911,42 @@ class MainWindow(QMainWindow):
         self._render_transfer_targets(report)
         self._render_transfer_plans(report, selling)
         self._render_strategic_action(report, self._current_state or self._state_from_ui())
+        self._render_chip_opportunity_outlook(report)
+
+    def _render_chip_opportunity_outlook(self, report: DecisionReportV2) -> None:
+        from fpl_engine.planning.chip_opportunity_forecast import ChipOpportunityForecastError, load_chip_opportunity_forecast
+        reference = report.chip_opportunity_forecast
+        if reference is None:
+            self.analysis_chip_outlook_summary.setText("Chip forecast: UNAVAILABLE\nNo advisory forecast is attached to this decision report.")
+            return
+        try:
+            path = (self.root / reference.path).resolve()
+            path.relative_to(self.root.resolve())
+            if not path.is_file():
+                raise ChipOpportunityForecastError("artifact missing")
+            forecast = load_chip_opportunity_forecast(path)
+            if forecast.context_id != report.context_id:
+                raise ChipOpportunityForecastError("context mismatch")
+        except (ChipOpportunityForecastError, ValueError):
+            self.analysis_chip_outlook_summary.setText("Chip forecast: UNAVAILABLE\nSaved advisory artifact cannot be verified for this decision.")
+            return
+        strong = [row for row in forecast.opportunities if row.chip_available and row.estimated_incremental_ev is not None]
+        strong.sort(key=lambda row: (-float(row.estimated_incremental_ev or 0.0), row.gameweek, row.chip_type))
+        if strong:
+            best = strong[0]
+            prefix = "~" if "APPROXIMATION" in best.method or "STATIC" in best.method else ""
+            details = [
+                f"Next strong window: GW{best.gameweek} | {best.chip_type.replace('_', ' ').title()}",
+                f"Estimated incremental EV: {prefix}{best.estimated_incremental_ev:+.1f}",
+                f"Confidence: {best.confidence}",
+                f"Method: {best.method}",
+            ]
+            self.analysis_chip_outlook_summary.setText("\n".join(details))
+            return
+        self.analysis_chip_outlook_summary.setText(
+            f"No strong chip opportunity in current forecast horizon.\n"
+            f"Status: {forecast.status.value} | GW{forecast.forecast_start_gw}-GW{forecast.forecast_end_gw}"
+        )
 
     def _clear_transfer_targets(self) -> None:
         self._transfer_targets = ()
@@ -1310,6 +1450,8 @@ class MainWindow(QMainWindow):
             self._full_analysis_after_decision(succeeded=False)
             return
         self.latest_decision_report = report_path
+        self._active_analysis_is_historical = False
+        self._trust_invalidation_reason = None
         self._render_decision_result(report)
         try:
             state=self._state_from_ui(); bundle=self._selected_bundle_for_state(state)
@@ -1323,6 +1465,7 @@ class MainWindow(QMainWindow):
         self._append_engine_log(f"DECISION ENGINE: PASS\nReport: {report_path}")
         self._set_decision_run_state(DecisionRunState.SUCCESS, "Decision recommendation ready.")
         self.decision_process = None
+        self._refresh_analysis_trust()
         self._full_analysis_after_decision(succeeded=True)
 
     def start_chip_run(self) -> None:
@@ -1398,6 +1541,7 @@ class MainWindow(QMainWindow):
         self._append_engine_log(f"CHIP SCREEN: PASS\nReport: {report_path}")
         self._set_chip_run_state(ChipRunState.SUCCESS, "Chip recommendation ready.")
         self.chip_process = None
+        self._refresh_analysis_trust()
         self._full_analysis_after_chip(outcome="success")
 
     def start_projection_run(self) -> None:
@@ -1511,6 +1655,8 @@ class MainWindow(QMainWindow):
             self._append_engine_log("FPL ACCOUNT SYNC INCOMPLETE:\n" + "\n".join(f"- {issue}" for issue in issues))
             self._set_account_sync_state(AccountSyncState.ERROR, "account data incomplete"); self.account_process=None; return
         planning_changed = planning_state_changed(self._current_state, state)
+        if planning_changed:
+            self._trust_invalidation_reason = "FPL account state changed after this analysis."
         self._clear_strategy_previews()
         if planning_changed:
             self.latest_decision_report = None
@@ -1526,6 +1672,7 @@ class MainWindow(QMainWindow):
         self._set_account_sync_state(AccountSyncState.CONNECTED, f"prices 15/15 · FT {state.free_transfers}")
         self._append_engine_log("FPL ACCOUNT SYNC: PASS")
         self.statusBar().showMessage(f"FPL account synchronized: 15 players, FT {state.free_transfers}, bank £{state.bank_tenths/10:.1f}m.",12000); self.account_process=None
+        self._refresh_analysis_trust()
 
     def validate_current_state(self) -> bool:
         try: validate_state(self._state_from_ui(),self.players)
@@ -1536,7 +1683,11 @@ class MainWindow(QMainWindow):
         state=self._state_from_ui()
         try: validate_state(state,self.players)
         except DesktopStateError as exc: QMessageBox.warning(self,"Cannot save squad",str(exc)); return
-        save_state(self.state_path,state); self._current_state=state; self._refresh_account_status(state); self._refresh_pitch_view(); self.statusBar().showMessage("Squad state saved to data/user/squad_state.json",5000)
+        changed = planning_state_changed(self._current_state, state)
+        save_state(self.state_path,state); self._current_state=state
+        if changed:
+            self._trust_invalidation_reason = "Account state changed after this analysis."
+        self._refresh_account_status(state); self._refresh_pitch_view(); self._refresh_analysis_trust(); self.statusBar().showMessage("Squad state saved to data/user/squad_state.json",5000)
 
     def reset_saved_wc(self) -> None:
         state=bootstrap_saved_wc(self.root)

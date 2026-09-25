@@ -142,3 +142,13 @@ def test_terminal_ft_value_is_considered_before_final_beam_pruning():
     final_step = result.best_path.steps[-1]
     assert final_step.action.is_hold
     assert result.best_path.terminal_ft_value == 4.0
+
+
+def test_v3_advisory_chip_forecast_cannot_change_path_score_or_recommendation():
+    rules, state, pool, projections = _inputs()
+    config = StrategicPlannerV3Config(beam_width=6, candidates_per_position=2, max_actions_per_state=6)
+    without = StrategicPlannerV3(rules, config).plan(state, pool, projections)
+    with_forecast = StrategicPlannerV3(rules, config).plan(state, pool, projections, chip_forecast={"status": "AVAILABLE"})
+    assert with_forecast.best_path == without.best_path
+    assert with_forecast.hold_now_path == without.hold_now_path
+    assert with_forecast.delta_vs_hold_now == without.delta_vs_hold_now

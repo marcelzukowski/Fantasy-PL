@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 from hashlib import sha256
@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from desktop_app.decision_orchestration import (
     DecisionRunState, decision_arguments, decision_bundle_for_state,
     format_decision_summary, load_decision_report, validate_decision_bundle,
-    write_decision_request,
+    write_decision_request, planning_context_for_state,
 )
 from desktop_app.decision_runner import DesktopDecisionError, run_desktop_decision, shadow_input
 import desktop_app.main_window as main_window_module
@@ -25,6 +25,7 @@ from desktop_app.transfer_plans import horizon_transfer_plans
 from desktop_app.data_access import PlayerRecord
 from desktop_app.state import DesktopSquadState, default_chip_state
 from fpl_engine.models.projections import GameweekPlayerProjection, PlayerProjection
+from fpl_engine.planning import DecisionInput, DecisionInputError, load_chip_opportunity_forecast
 
 
 AT = datetime(2026, 9, 10, 10, tzinfo=timezone.utc)
@@ -130,6 +131,11 @@ def test_decision_bridge_runs_existing_engine_and_preserves_account_state(tmp_pa
     assert report.schema_version == "decision_report_v2"
     assert source.read_text(encoding="utf-8") == original
     assert report["external_mutations"] == []
+    assert report.chip_opportunity_forecast is not None
+    forecast_path = ROOT / report.chip_opportunity_forecast.path
+    forecast = load_chip_opportunity_forecast(forecast_path)
+    assert forecast.context_id == report.context_id
+    assert forecast.source["production_influence"] is False
     assert len(report["context_id"]) == 64
     assert report["planning_context"]["context_id"] == report["context_id"]
     assert report["recommendation"]["transfers_out"] == ["p14"]
@@ -500,3 +506,34 @@ def test_new_decision_run_clears_stale_captaincy_result(qapp, monkeypatch):
         assert window.analysis_captain_summary.text() == "Captain recommendation will appear here."
     finally:
         window.close()
+
+
+def _decision_input_fixture(tmp_path):
+    state, source, bundle = _bundle_and_state(tmp_path)
+    desktop = json.loads(source.read_text(encoding="utf-8")); payload = shadow_input(desktop, json.loads(bundle.read_text(encoding="utf-8")))
+    shared = tmp_path / "shared-input.json"; shared.write_text(json.dumps(payload), encoding="utf-8")
+    from fpl_engine.shadow import load_squad_state
+    squad, pool, projections, pipeline, warnings, rules, freshness = load_squad_state(shared, project_root=ROOT, prediction_bundle_path=bundle)
+    context = planning_context_for_state(tmp_path, desktop, bundle, require_canonical_path=False)
+    return DecisionInput.create(planning_context=context, state=squad, player_pool=pool, projections=projections, pipeline=pipeline, warnings=warnings, rules=rules, freshness=freshness, bundle_identity=context.projection_run_id)
+
+def test_decision_input_is_deterministic_and_context_bound(tmp_path):
+    shared = _decision_input_fixture(tmp_path)
+    reordered = DecisionInput.create(planning_context=shared.planning_context, state=shared.state, player_pool=shared.player_pool, projections=dict(reversed(tuple(shared.projections.items()))), pipeline=dict(reversed(tuple(shared.pipeline.items()))), warnings=shared.warnings, rules=shared.rules, freshness=shared.freshness, bundle_identity=shared.bundle_identity)
+    assert shared.lineage() == reordered.lineage()
+    changed_context = replace(shared.planning_context, bank_tenths=shared.state.bank + 1)
+    with pytest.raises(DecisionInputError, match="SquadState"):
+        DecisionInput.create(planning_context=changed_context, state=shared.state, player_pool=shared.player_pool, projections=shared.projections, pipeline=shared.pipeline, warnings=shared.warnings, rules=shared.rules, freshness=shared.freshness, bundle_identity=shared.bundle_identity)
+
+def test_decision_input_lineup_cache_is_context_and_key_scoped(tmp_path):
+    shared = _decision_input_fixture(tmp_path)
+    first = shared.lineup_for(shared.state); second = shared.lineup_for(shared.state)
+    assert first == second and shared.diagnostics.lineup_cache_hits == 1 and shared.diagnostics.lineup_cache_misses == 1
+    candidate = next(row for row in shared.player_pool if row.player_id == "candidate")
+    modified = replace(shared.state, players=tuple(candidate if row.player_id == "p14" else row for row in shared.state.players))
+    shared.lineup_for(modified); shared.lineup_for(replace(shared.state, current_gameweek=6), target_gameweek=6)
+    assert shared.diagnostics.lineup_cache_misses == 3
+    other_context = replace(shared.planning_context, bank_tenths=shared.state.bank + 1)
+    other = DecisionInput.create(planning_context=other_context, state=replace(shared.state, bank=shared.state.bank + 1), player_pool=shared.player_pool, projections=shared.projections, pipeline=shared.pipeline, warnings=shared.warnings, rules=shared.rules, freshness=shared.freshness, bundle_identity=shared.bundle_identity)
+    other.lineup_for(other.state)
+    assert other.diagnostics.lineup_cache_hits == 0 and other.context_id != shared.context_id

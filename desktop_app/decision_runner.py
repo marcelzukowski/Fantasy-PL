@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import tempfile
 
-from fpl_engine.optimizer import OptimizerError, SquadState, optimize_lineup, validate_squad
+from fpl_engine.optimizer import OptimizerError, SquadState, validate_squad
 from fpl_engine.shadow import ShadowRunError, load_squad_state, run_shadow
 from fpl_engine.strategy import StrategicPlannerV3, StrategicPlannerV3Error
-from fpl_engine.reports import DecisionReportV2, ReportSchemaError
+from fpl_engine.reports import DecisionReportV2, ReportReference, ReportSchemaError
+from fpl_engine.planning import (
+    ChipOpportunityForecastError, DecisionInput, DecisionInputError,
+    build_chip_opportunity_forecast, write_chip_opportunity_forecast,
+)
 
 from .decision_orchestration import planning_context_for_state, validate_decision_bundle
 from .transfer_plans import TransferPlanView, horizon_transfer_plans
@@ -124,8 +129,9 @@ def _transfer_identity(outgoing, incoming) -> dict[str, list[str]]:
     }
 
 
-def _strategy_preview_payload(*, plan, state, pool, projections, rules) -> dict:
-    """Apply one existing transfer plan, then use the existing lineup optimizer."""
+def _strategy_preview_payload(*, plan, decision_input: DecisionInput) -> dict:
+    """Apply one existing transfer plan with the run-scoped shared evaluator."""
+    state, pool, projections, rules = decision_input.state, decision_input.player_pool, decision_input.projections, decision_input.rules
     outgoing = tuple(plan.transfers_out)
     incoming = tuple(plan.transfers_in)
     owned = {player.player_id: player for player in state.players}
@@ -161,7 +167,7 @@ def _strategy_preview_payload(*, plan, state, pool, projections, rules) -> dict:
     )
     try:
         validate_squad(preview_state, rules)
-        lineup = optimize_lineup(preview_state, projections, rules)
+        lineup = decision_input.lineup_for(preview_state, target_gameweek=state.current_gameweek)
     except OptimizerError as exc:
         raise DesktopDecisionError("A selected strategy cannot produce a valid current-GW lineup.") from exc
     return {
@@ -276,15 +282,21 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         source = Path(temporary) / "shadow-input.json"
         source.write_text(json.dumps(payload), encoding="utf-8")
         try:
-            machine, _ = run_shadow(source, project_root=project_root, output_dir=output_dir, prediction_bundle_path=prediction_bundle_path)
-        except ShadowRunError as exc:
-            raise DesktopDecisionError(str(exc)) from exc
-        try:
-            strategy_state, pool, projections, _pipeline, _warnings, rules, _freshness = load_squad_state(
+            strategy_state, pool, projections, pipeline, warnings, rules, freshness = load_squad_state(
                 source, project_root=project_root, prediction_bundle_path=prediction_bundle_path,
             )
+            decision_input = DecisionInput.create(
+                planning_context=planning_context, state=strategy_state, player_pool=pool,
+                projections=projections, pipeline=pipeline, warnings=warnings, rules=rules,
+                freshness=freshness, bundle_identity=planning_context.projection_run_id,
+            )
+        except (ShadowRunError, DecisionInputError) as exc:
+            raise DesktopDecisionError("Decision output cannot build a shared validated engine input.") from exc
+        try:
+            machine, _ = run_shadow(source, project_root=project_root, output_dir=output_dir,
+                                    prediction_bundle_path=prediction_bundle_path, decision_input=decision_input)
         except ShadowRunError as exc:
-            raise DesktopDecisionError("Decision output cannot build current-GW strategy previews.") from exc
+            raise DesktopDecisionError(str(exc)) from exc
     report = _object(machine, "shadow decision report")
     recommendation = report.get("recommendations", {}).get("greedy_1gw")
     if not isinstance(recommendation, dict):
@@ -301,13 +313,30 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
     strategy_previews: dict[str, dict] = {}
     strategy_preview_identities: dict[str, dict[str, list[str]]] = {}
     strategy_unavailable: dict[str, str] = {}
+    created_at = datetime.now(timezone.utc)
+    chip_forecast_reference = None
+    chip_forecast = None
+    try:
+        chip_forecast = build_chip_opportunity_forecast(decision_input, generated_at=created_at)
+        forecast_path = write_chip_opportunity_forecast(project_root, chip_forecast)
+        chip_forecast_reference = {
+            "path": str(forecast_path.resolve().relative_to(project_root.resolve())),
+            "sha256": sha256(forecast_path.read_bytes()).hexdigest(),
+            "schema_version": chip_forecast.schema_version,
+        }
+    except (ChipOpportunityForecastError, OSError):
+        # An advisory artifact must never invalidate a verified decision.
+        chip_forecast = None
     strategic_v3 = None
     strategic_v3_error = None
     try:
-        strategic_v3 = StrategicPlannerV3(rules).plan(strategy_state, pool, projections).as_dict()
+        with decision_input.policy_timer("strategic_v3"):
+            strategic_v3 = StrategicPlannerV3(decision_input.rules).plan(
+                decision_input.state, decision_input.player_pool, decision_input.projections,
+                chip_forecast=chip_forecast,
+            ).as_dict()
         strategy_previews["strategic"] = _strategy_preview_payload(
-            plan=_strategic_v3_plan(strategic_v3), state=strategy_state, pool=pool,
-            projections=projections, rules=rules,
+            plan=_strategic_v3_plan(strategic_v3), decision_input=decision_input,
         )
     except (StrategicPlannerV3Error, DesktopDecisionError, OptimizerError) as exc:
         strategic_v3_error = str(exc)
@@ -318,8 +347,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
             continue
         try:
             strategy_previews[key] = _strategy_preview_payload(
-                plan=display_plan.plan, state=strategy_state, pool=pool,
-                projections=projections, rules=rules,
+                plan=display_plan.plan, decision_input=decision_input,
             )
             # Keep a per-slot identity. Short-term and Balanced may deliberately
             # carry identical transfer sets, but each has its own preview key.
@@ -343,8 +371,8 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         "strategy_preview_identities": strategy_preview_identities,
         "strategy_unavailable": strategy_unavailable,
         "player_metadata": _display_metadata(prediction_bundle_path, bundle),
+        "chip_opportunity_forecast": chip_forecast_reference,
     }
-    created_at = datetime.now(timezone.utc)
     destination = output_dir / f"desktop-decision-{created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
     try:
         typed_report = DecisionReportV2.create(
@@ -363,6 +391,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
             strategy_preview_identities=result["strategy_preview_identities"],
             strategy_unavailable=result["strategy_unavailable"],
             player_metadata=result["player_metadata"],
+            chip_opportunity_forecast=result["chip_opportunity_forecast"],
         )
     except ReportSchemaError as exc:
         raise DesktopDecisionError(f"Decision report schema validation failed: {exc}") from exc

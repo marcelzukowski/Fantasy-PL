@@ -175,7 +175,11 @@ class StrategicPlannerV3:
         projections: Mapping[str, PlayerProjection],
         *,
         price_signals: Mapping[str, PriceChangeSignal] | None = None,
+        chip_forecast: object | None = None,
     ) -> StrategicPlannerV3Result:
+        # Advisory-only V1 input: deliberately not read by action generation,
+        # beam ranking, path score, terminal value, or recommendation logic.
+        _ = chip_forecast
         try:
             validate_squad(state, self.rules)
         except OptimizerError as exc:
