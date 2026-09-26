@@ -1,4 +1,4 @@
-"""Read-only trust and freshness presentation model for Analysis.
+﻿"""Read-only trust and freshness presentation model for Analysis.
 
 The model deliberately has no Qt or filesystem dependency.  The desktop shell
 supplies already parsed reports and already verified local facts; this module
@@ -58,6 +58,8 @@ class AnalysisTrustInputs:
     price_signal_status: str | None = None
     archive_status: str | None = None
     chip_forecast_status: str | None = None
+    availability_status: str | None = None
+    minutes_history_status: str | None = None
     historical: bool = False
     material_state_changed: bool = False
     projection_changed: bool = False
@@ -86,6 +88,8 @@ class AnalysisTrustViewModel:
     price_signal_status: str
     archive_status: str | None
     chip_forecast_status: str
+    availability_status: str
+    minutes_history_status: str
     optional_notes: tuple[str, ...]
 
     @property
@@ -113,7 +117,7 @@ def _price_status(decision: DecisionReportV2 | None, supplied: str | None) -> st
     return str(value) if value in {"AVAILABLE", "STALE", "UNAVAILABLE"} else "UNAVAILABLE"
 
 
-def _optional_notes(chip: ChipTrustStatus, market: str, coverage: str | None, price: str, forecast: str) -> tuple[str, ...]:
+def _optional_notes(chip: ChipTrustStatus, market: str, coverage: str | None, price: str, forecast: str, availability: str, minutes_history: str) -> tuple[str, ...]:
     notes: list[str] = []
     if chip is not ChipTrustStatus.COMPLETE:
         notes.append(f"Chip Strategy: {chip.value}")
@@ -127,6 +131,10 @@ def _optional_notes(chip: ChipTrustStatus, market: str, coverage: str | None, pr
         notes.append("Price signals unavailable" if price == "UNAVAILABLE" else "Price signals stale")
     if forecast != "AVAILABLE":
         notes.append(f"Chip forecast: {forecast}")
+    if availability != "AVAILABLE":
+        notes.append(f"Availability risk: {availability}")
+    if minutes_history != "AVAILABLE":
+        notes.append(f"Recent minutes: {minutes_history}")
     return tuple(notes)
 
 
@@ -143,7 +151,13 @@ def build_analysis_trust(inputs: AnalysisTrustInputs) -> AnalysisTrustViewModel:
     forecast = str(inputs.chip_forecast_status or ("AVAILABLE" if decision and getattr(decision, "chip_opportunity_forecast", None) else "UNAVAILABLE")).upper()
     if forecast not in {"AVAILABLE", "PARTIAL", "UNAVAILABLE", "STALE"}:
         forecast = "UNAVAILABLE"
-    notes = _optional_notes(inputs.chip_state, market, inputs.market_coverage, price, forecast)
+    availability = str(inputs.availability_status or ("AVAILABLE" if decision and getattr(decision, "player_availability_snapshot", None) else "UNAVAILABLE")).upper()
+    if availability not in {"AVAILABLE", "PARTIAL", "UNAVAILABLE", "STALE"}:
+        availability = "UNAVAILABLE"
+    minutes_history = str(inputs.minutes_history_status or ("PARTIAL" if decision and getattr(decision, "player_minutes_history_snapshot", None) else "UNAVAILABLE")).upper()
+    if minutes_history not in {"AVAILABLE", "PARTIAL", "UNAVAILABLE", "STALE", "SKIPPED_AFTER_DEADLINE", "SKIPPED_UNVERIFIED_DEADLINE"}:
+        minutes_history = "UNAVAILABLE"
+    notes = _optional_notes(inputs.chip_state, market, inputs.market_coverage, price, forecast, availability, minutes_history)
     common = dict(
         fpl_sync_timestamp=_timestamp(inputs.fpl_sync_timestamp),
         analysis_timestamp=_timestamp(inputs.analysis_timestamp) or (decision.created_at if decision else None),
@@ -158,6 +172,8 @@ def build_analysis_trust(inputs: AnalysisTrustInputs) -> AnalysisTrustViewModel:
         price_signal_status=price,
         archive_status=inputs.archive_status,
         chip_forecast_status=forecast,
+        availability_status=availability,
+        minutes_history_status=minutes_history,
         optional_notes=notes,
     )
     if decision is None and (inputs.material_state_changed or inputs.projection_changed):

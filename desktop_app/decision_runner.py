@@ -15,7 +15,9 @@ from fpl_engine.strategy import StrategicPlannerV3, StrategicPlannerV3Error
 from fpl_engine.reports import DecisionReportV2, ReportReference, ReportSchemaError
 from fpl_engine.planning import (
     ChipOpportunityForecastError, DecisionInput, DecisionInputError,
-    build_chip_opportunity_forecast, write_chip_opportunity_forecast,
+    build_chip_opportunity_forecast, write_chip_opportunity_forecast, build_player_availability_snapshot, write_player_availability_snapshot, PlayerAvailabilityRiskError,
+    build_player_minutes_history_snapshot, write_player_minutes_history_snapshot, recent_minutes_evidence, PlayerMinutesHistoryError,
+    OfficialPlayerHistoryAcquirer, OfficialPlayerHistoryError, write_official_player_history_acquisition,
 )
 
 from .decision_orchestration import planning_context_for_state, validate_decision_bundle
@@ -257,7 +259,216 @@ def _strategic_v3_plan(report: dict) -> TransferPlanView:
     )
 
 
-def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Path, output_dir: Path, project_root: Path) -> Path:
+def _add_action_ids(player_ids: set[str], action: object) -> None:
+    if not isinstance(action, dict):
+        return
+    for key in ("transfers_out", "transfers_in"):
+        values = action.get(key, ())
+        if isinstance(values, (list, tuple)):
+            player_ids.update(str(value) for value in values if value)
+
+
+def _final_advisory_player_ids(*, decision_input: DecisionInput, recommendation: dict,
+                                feasible_plans: list, strategic_v3: dict | None,
+                                strategy_previews: dict[str, dict]) -> tuple[str, ...]:
+    """Bound the optional Official FPL batch to already-frozen decision outputs."""
+    player_ids = {str(player.player_id) for player in decision_input.state.players}
+    _add_action_ids(player_ids, recommendation)
+    for plan in feasible_plans:
+        _add_action_ids(player_ids, plan)
+    if isinstance(strategic_v3, dict):
+        _add_action_ids(player_ids, strategic_v3.get("current_action"))
+        for action in strategic_v3.get("path", ()):
+            _add_action_ids(player_ids, action)
+    for preview in strategy_previews.values():
+        if not isinstance(preview, dict):
+            continue
+        _add_action_ids(player_ids, preview)
+        for key in ("captain", "vice_captain"):
+            if preview.get(key):
+                player_ids.add(str(preview[key]))
+        for key in ("starting_xi", "bench_order"):
+            values = preview.get(key, ())
+            if isinstance(values, (list, tuple)):
+                player_ids.update(str(value) for value in values if value)
+    owned = {str(player.player_id) for player in decision_input.state.players}
+    top_targets = [
+        player_id for player_id, projection in sorted(
+            decision_input.projections.items(),
+            key=lambda row: (-float(row[1].weighted_ev_next_6), row[0]),
+        ) if player_id not in owned
+    ][:10]
+    player_ids.update(top_targets)
+    return tuple(sorted(player_ids))
+
+
+def _deadline_capture_status(deadline: str | None, *, observed_at: datetime) -> tuple[str, str | None]:
+    """Gate optional network capture before any provider object is constructed."""
+    if not deadline:
+        return "SKIPPED_UNVERIFIED_DEADLINE", "Official deadline is unavailable; advisory history was not requested."
+    try:
+        parsed = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError
+        cutoff = parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return "SKIPPED_UNVERIFIED_DEADLINE", "Official deadline is invalid; advisory history was not requested."
+    if observed_at >= cutoff:
+        return "SKIPPED_AFTER_DEADLINE", "Official deadline has passed; advisory history was not requested."
+    return "ELIGIBLE", None
+
+
+def _existing_history_before_context(bundle_directory: Path, *, cutoff: datetime) -> tuple[tuple, dict, int]:
+    """Load only an immutable manual receipt observed no later than the context."""
+    candidates = list(Path(bundle_directory).glob("player_minutes_history_records_*.json"))
+    legacy = Path(bundle_directory) / "player_minutes_history_records.json"
+    if legacy.is_file():
+        candidates.append(legacy)
+    selected = None
+    post_cutoff = 0
+    for candidate in sorted(candidates):
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            observed = payload.get("requested_at") if isinstance(payload, dict) else None
+            observed_at = datetime.fromisoformat(observed.replace("Z", "+00:00")) if isinstance(observed, str) else None
+            if isinstance(payload, dict) and observed_at is not None and observed_at <= cutoff:
+                selected = payload
+            elif isinstance(payload, dict) and observed_at is not None:
+                post_cutoff += 1
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            continue
+    if not isinstance(selected, dict):
+        return (), {}, post_cutoff
+    records = selected.get("appearances", ()) if isinstance(selected.get("appearances"), list) else ()
+    provenance = {
+        "source": "OFFICIAL_FPL",
+        "raw_source_references": selected.get("raw_source_references", {}),
+        "warnings": selected.get("warnings", ()),
+        "acquisition_statistics": selected.get("statistics", {}),
+        "source_snapshot_timestamp": selected.get("requested_at"),
+        "acquisition_receipt": selected.get("acquisition_receipt"),
+        "capture_status": "AVAILABLE",
+    }
+    return tuple(records), provenance, post_cutoff
+
+
+def _advisory_snapshots(*, project_root: Path, prediction_bundle_path: Path,
+                        decision_input: DecisionInput, player_ids: tuple[str, ...],
+                        capture_advisory_history: bool, observed_at: datetime | None = None):
+    """Create advisory-only snapshots after policy freeze, never before it."""
+    now = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    bundle_directory = prediction_bundle_path.parent
+    history_records: tuple = ()
+    history_provenance: dict = {
+        "projection_run_id": decision_input.bundle_identity,
+        "source": "LOCAL_OFFICIAL_FPL_CACHE",
+        "production_influence": False,
+        "requested_player_ids": list(player_ids),
+        "requested_count": len(player_ids),
+        "capture_status": "NOT_REQUESTED",
+    }
+    cutoff = datetime.fromisoformat(decision_input.planning_context.prediction_timestamp.replace("Z", "+00:00"))
+    if capture_advisory_history:
+        capture_status, warning = _deadline_capture_status(decision_input.planning_context.deadline, observed_at=now)
+        history_provenance["capture_status"] = capture_status
+        if warning:
+            history_provenance["warnings"] = (warning,)
+        if capture_status == "ELIGIBLE":
+            print("DECISION_PROGRESS=collecting advisory player history", flush=True)
+            try:
+                # Network and scientific/provider dependencies stay in this
+                # external worker; the packaged desktop shell only starts it.
+                import httpx
+                from fpl_engine.data.http_cache import HttpCache
+                from fpl_engine.data.raw_store import RawStore
+                from fpl_engine.data.providers.fpl_api import OfficialFPLAdapter
+
+                raw_store = RawStore(project_root / "data" / "raw")
+                cache = HttpCache(project_root / "data" / "interim" / "http_cache", clock=lambda: now)
+                with httpx.Client() as client:
+                    adapter = OfficialFPLAdapter(
+                        client=client, cache=cache, raw_store=raw_store,
+                        clock=lambda: now,
+                    )
+                    acquisition = OfficialPlayerHistoryAcquirer(
+                        adapter=adapter, raw_store=raw_store, clock=lambda: now,
+                    ).refresh(
+                        bundle_directory=bundle_directory,
+                        season=decision_input.state.season,
+                        gameweek=decision_input.state.current_gameweek,
+                        squad_player_ids=tuple(player.player_id for player in decision_input.state.players),
+                        top_targets=0,
+                        extra_player_ids=player_ids,
+                    )
+                receipt = write_official_player_history_acquisition(bundle_directory, acquisition)
+                history_records = tuple(acquisition.appearances)
+                requested = int(acquisition.statistics.get("players_requested", 0))
+                failures = int(acquisition.statistics.get("failures", 0))
+                history_provenance.update({
+                    "source": "OFFICIAL_FPL",
+                    "raw_source_references": acquisition.raw_source_references,
+                    "warnings": acquisition.warnings,
+                    "acquisition_statistics": acquisition.statistics,
+                    "source_snapshot_timestamp": acquisition.requested_at,
+                    "acquisition_receipt": str(receipt.resolve().relative_to(project_root.resolve())),
+                    "capture_status": "PARTIAL" if failures or requested < len(player_ids) else "AVAILABLE",
+                })
+            except Exception as exc:
+                # The decision and all frozen policies remain valid even when
+                # optional provider acquisition cannot complete.
+                history_provenance.update({
+                    "capture_status": "UNAVAILABLE",
+                    "warnings": (f"Official advisory history unavailable: {type(exc).__name__}.",),
+                })
+    else:
+        records, provenance, post_cutoff = _existing_history_before_context(bundle_directory, cutoff=cutoff)
+        history_records = records
+        if provenance:
+            history_provenance.update(provenance)
+        if post_cutoff:
+            history_provenance["warnings"] = tuple(history_provenance.get("warnings", ())) + (
+                f"Excluded {post_cutoff} Official FPL history refresh record(s) observed after this decision cutoff.",
+            )
+
+    raw_players = json.loads((bundle_directory / "current_players.json").read_text(encoding="utf-8"))
+    metadata = {
+        str(row.get("player_id")): row for row in raw_players
+        if isinstance(row, dict) and row.get("player_id") is not None
+    } if isinstance(raw_players, list) else {}
+    freshness_rows = json.loads((bundle_directory / "source_freshness.json").read_text(encoding="utf-8"))
+    bootstrap = next(
+        (row for row in freshness_rows if isinstance(row, dict) and row.get("entity") == "bootstrap_static"),
+        {},
+    ) if isinstance(freshness_rows, list) else {}
+    source_observed_at = bootstrap.get("known_at")
+
+    minutes_history = build_player_minutes_history_snapshot(
+        decision_input, player_ids=player_ids, appearances=history_records, provenance=history_provenance,
+        advisory_cutoff=now if capture_advisory_history and history_provenance.get("capture_status") in {"AVAILABLE", "PARTIAL"} else None,
+    )
+    advisory_input = decision_input.with_advisory("player_minutes_history_snapshot", minutes_history)
+    minutes_history_path = write_player_minutes_history_snapshot(project_root, minutes_history)
+    minutes_reference = {
+        "path": str(minutes_history_path.resolve().relative_to(project_root.resolve())),
+        "sha256": sha256(minutes_history_path.read_bytes()).hexdigest(),
+    }
+    availability = build_player_availability_snapshot(
+        advisory_input, player_metadata=metadata, player_ids=player_ids,
+        source_observed_at=source_observed_at, source_provenance=bootstrap,
+        recent_minutes_by_player=recent_minutes_evidence(minutes_history),
+        advisory_cutoff=now if capture_advisory_history and history_provenance.get("capture_status") in {"AVAILABLE", "PARTIAL"} else None,
+    )
+    availability_input = advisory_input.with_advisory("player_availability_snapshot", availability)
+    availability_path = write_player_availability_snapshot(project_root, availability)
+    availability_reference = {
+        "path": str(availability_path.resolve().relative_to(project_root.resolve())),
+        "sha256": sha256(availability_path.read_bytes()).hexdigest(),
+    }
+    return availability_input, availability_reference, minutes_reference
+
+
+def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Path, output_dir: Path,
+                         project_root: Path, capture_advisory_history: bool = False) -> Path:
     desktop = _object(desktop_state_path, "desktop squad state")
     bundle = validate_decision_bundle(
         project_root,
@@ -356,6 +567,28 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
             )
         except DesktopDecisionError as exc:
             strategy_unavailable[key] = str(exc)
+
+    # Policies, captaincy and all previews are now frozen. This optional
+    # collection is deliberately after V1/V2/V3 and before final report
+    # serialization, so it cannot rerun or influence recommendation logic.
+    availability_snapshot_reference = None
+    minutes_history_snapshot_reference = None
+    final_target_ids = _final_advisory_player_ids(
+        decision_input=decision_input, recommendation=recommendation,
+        feasible_plans=feasible_plans, strategic_v3=strategic_v3,
+        strategy_previews=strategy_previews,
+    )
+    try:
+        decision_input, availability_snapshot_reference, minutes_history_snapshot_reference = _advisory_snapshots(
+            project_root=project_root, prediction_bundle_path=prediction_bundle_path,
+            decision_input=decision_input, player_ids=final_target_ids,
+            capture_advisory_history=capture_advisory_history,
+        )
+    except (PlayerAvailabilityRiskError, PlayerMinutesHistoryError, OfficialPlayerHistoryError,
+            OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        # Advice is optional: keep every already-frozen policy result intact.
+        availability_snapshot_reference = None
+        minutes_history_snapshot_reference = None
     result = {
         "report_version": 4, "mode": report.get("mode"), "external_mutations": report.get("external_mutations", []), "context_id": planning_context.context_id, "planning_context": planning_context.to_dict(),
         "shadow_report": str(machine), "recommendation": recommendation,
@@ -372,12 +605,16 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         "strategy_unavailable": strategy_unavailable,
         "player_metadata": _display_metadata(prediction_bundle_path, bundle),
         "chip_opportunity_forecast": chip_forecast_reference,
+        "player_availability_snapshot": availability_snapshot_reference,
+        "player_minutes_history_snapshot": minutes_history_snapshot_reference,
     }
-    destination = output_dir / f"desktop-decision-{created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    # Report time is finalization time, after optional advisory acquisition.
+    report_created_at = datetime.now(timezone.utc)
+    destination = output_dir / f"desktop-decision-{report_created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
     try:
         typed_report = DecisionReportV2.create(
             report_id=destination.stem,
-            created_at=created_at,
+            created_at=report_created_at,
             planning_context=planning_context,
             mode=result["mode"],
             external_mutations=result["external_mutations"],
@@ -392,6 +629,8 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
             strategy_unavailable=result["strategy_unavailable"],
             player_metadata=result["player_metadata"],
             chip_opportunity_forecast=result["chip_opportunity_forecast"],
+            player_availability_snapshot=result["player_availability_snapshot"],
+            player_minutes_history_snapshot=result["player_minutes_history_snapshot"],
         )
     except ReportSchemaError as exc:
         raise DesktopDecisionError(f"Decision report schema validation failed: {exc}") from exc
@@ -404,11 +643,14 @@ def main() -> int:
     parser.add_argument("--desktop-state", type=Path, required=True)
     parser.add_argument("--prediction-bundle", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--capture-advisory-history", action="store_true",
+                        help="Run optional pre-deadline Official FPL history capture after policy freeze.")
     args = parser.parse_args()
     try:
         report = run_desktop_decision(
             desktop_state_path=args.desktop_state, prediction_bundle_path=args.prediction_bundle,
             output_dir=args.output_dir, project_root=Path(__file__).resolve().parents[1],
+            capture_advisory_history=bool(args.capture_advisory_history),
         )
     except DesktopDecisionError as exc:
         parser.error(str(exc))
@@ -418,4 +660,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -12,7 +12,8 @@ from desktop_app.decision_orchestration import (
     format_decision_summary, load_decision_report, validate_decision_bundle,
     write_decision_request, planning_context_for_state,
 )
-from desktop_app.decision_runner import DesktopDecisionError, run_desktop_decision, shadow_input
+from desktop_app.decision_runner import (DesktopDecisionError, _deadline_capture_status, _final_advisory_player_ids,
+    run_desktop_decision, shadow_input)
 import desktop_app.main_window as main_window_module
 from desktop_app.orchestration import DesktopEngineError
 from desktop_app.main_window import MainWindow
@@ -537,3 +538,92 @@ def test_decision_input_lineup_cache_is_context_and_key_scoped(tmp_path):
     other = DecisionInput.create(planning_context=other_context, state=replace(shared.state, bank=shared.state.bank + 1), player_pool=shared.player_pool, projections=shared.projections, pipeline=shared.pipeline, warnings=shared.warnings, rules=shared.rules, freshness=shared.freshness, bundle_identity=shared.bundle_identity)
     other.lineup_for(other.state)
     assert other.diagnostics.lineup_cache_hits == 0 and other.context_id != shared.context_id
+
+
+def test_decision_input_advisory_is_context_bound_and_does_not_change_lineup(tmp_path):
+    from types import SimpleNamespace
+
+    shared = _decision_input_fixture(tmp_path)
+    baseline = shared.lineup_for(shared.state)
+    enriched = shared.with_advisory("player_availability_snapshot", SimpleNamespace(context_id=shared.context_id))
+    assert dict(shared.advisory) == {}
+    assert enriched.advisory["player_availability_snapshot"].context_id == shared.context_id
+    assert enriched.lineup_for(enriched.state) == baseline
+    with pytest.raises(DecisionInputError, match="context"):
+        shared.with_advisory("player_availability_snapshot", SimpleNamespace(context_id="other-context"))
+
+
+def test_player_risk_card_keeps_availability_and_missing_minutes_distinct(qapp, tmp_path):
+    from types import SimpleNamespace
+    from fpl_engine.planning.player_availability_risk import (
+        PLAYER_AVAILABILITY_RISK_METHOD_V1, PLAYER_AVAILABILITY_SNAPSHOT_SCHEMA_V1,
+        PlayerAvailabilitySnapshot, write_player_availability_snapshot,
+    )
+
+    context_id = "player-risk-context"
+    snapshot = PlayerAvailabilitySnapshot(
+        PLAYER_AVAILABILITY_SNAPSHOT_SCHEMA_V1, context_id, AT.isoformat(), 6,
+        PLAYER_AVAILABILITY_RISK_METHOD_V1, (),
+        {"status": "AVAILABLE", "players_evaluated": 0, "official_availability_coverage": 1.0, "recent_minutes_coverage": 0.0},
+        {"prediction_timestamp": AT.isoformat(), "observed_at": AT.isoformat(), "source": "official_fpl", "production_influence": False},
+        (), {"cache_hits": 0},
+    )
+    artifact = write_player_availability_snapshot(tmp_path, snapshot)
+    report = SimpleNamespace(
+        context_id=context_id,
+        player_availability_snapshot=SimpleNamespace(path=str(artifact.relative_to(tmp_path)), sha256=sha256(artifact.read_bytes()).hexdigest()),
+        recommendation={"transfers_in": []},
+        preview_for=lambda _key: None,
+    )
+    window = MainWindow(ROOT)
+    try:
+        window.root = tmp_path
+        window._render_player_availability_risk(report)
+        rendered = window.analysis_availability_summary.text()
+        assert "Availability: AVAILABLE" in rendered
+        assert "Minutes history: UNAVAILABLE" in rendered
+        assert "No MEDIUM/HIGH" in rendered
+        assert "Advisory only" in window.analysis_availability_summary.toolTip()
+    finally:
+        window.close()
+
+
+def test_advisory_capture_argument_is_explicit_and_off_by_default(tmp_path):
+    base = decision_arguments(
+        request_path=tmp_path / "request.json", prediction_bundle=tmp_path / "bundle.json", output_dir=tmp_path / "out",
+    )
+    enabled = decision_arguments(
+        request_path=tmp_path / "request.json", prediction_bundle=tmp_path / "bundle.json", output_dir=tmp_path / "out",
+        capture_advisory_history=True,
+    )
+    assert "--capture-advisory-history" not in base
+    assert enabled[-1] == "--capture-advisory-history"
+
+
+def test_advisory_deadline_gate_is_strict_at_equality_and_never_constructs_provider():
+    before = datetime(2026, 9, 26, 17, 29, 59, tzinfo=timezone.utc)
+    deadline = "2026-09-26T17:30:00+00:00"
+    assert _deadline_capture_status(deadline, observed_at=before)[0] == "ELIGIBLE"
+    assert _deadline_capture_status(deadline, observed_at=datetime(2026, 9, 26, 17, 30, tzinfo=timezone.utc))[0] == "SKIPPED_AFTER_DEADLINE"
+    assert _deadline_capture_status(None, observed_at=before)[0] == "SKIPPED_UNVERIFIED_DEADLINE"
+
+
+def test_final_advisory_set_uses_only_frozen_outputs_and_deduplicates():
+    projections = {
+        "owned": type("Projection", (), {"weighted_ev_next_6": 1.0})(),
+        "top": type("Projection", (), {"weighted_ev_next_6": 10.0})(),
+        "incoming": type("Projection", (), {"weighted_ev_next_6": 9.0})(),
+        "future": type("Projection", (), {"weighted_ev_next_6": 8.0})(),
+    }
+    decision_input = type("Input", (), {
+        "state": type("State", (), {"players": (type("Player", (), {"player_id": "owned"})(),)})(),
+        "projections": projections,
+    })()
+    ids = _final_advisory_player_ids(
+        decision_input=decision_input,
+        recommendation={"transfers_out": ["owned"], "transfers_in": ["incoming"]},
+        feasible_plans=[{"transfers_out": ["owned"], "transfers_in": ["incoming"]}],
+        strategic_v3={"current_action": {"transfers_in": ["incoming"]}, "path": [{"transfers_in": ["future"]}]},
+        strategy_previews={"short_term": {"starting_xi": ["owned"], "bench_order": [], "captain": "owned", "vice_captain": "incoming"}},
+    )
+    assert ids == ("future", "incoming", "owned", "top")

@@ -55,6 +55,7 @@ class DecisionInput:
     artifact_identities:tuple[tuple[str,str],...]
     diagnostics:DecisionInputDiagnostics
     cache:DecisionInputCache
+    advisory:Mapping[str,object]=field(default_factory=lambda:MappingProxyType({}))
 
     @classmethod
     def create(cls, *, planning_context:PlanningContext, state:SquadState, player_pool:Sequence[SquadPlayer], projections:Mapping[str,PlayerProjection], pipeline:Mapping[str,Any], warnings:Sequence[str], rules:OptimizerRules, freshness:object, bundle_identity:str) -> "DecisionInput":
@@ -83,6 +84,14 @@ class DecisionInput:
         cache=DecisionInputCache(planning_context.context_id,diagnostics)
         return cls(planning_context,planning_context.context_id,state,tuple(player_pool),MappingProxyType(dict(ordered_projection)),MappingProxyType(projection_lookup),MappingProxyType(by_id),MappingProxyType(positions),MappingProxyType(dict(pipeline)),freshness,tuple(warnings),rules,bundle_identity,planning_context.artifact_hashes,diagnostics,cache)
 
+    def with_advisory(self, name: str, value: object) -> "DecisionInput":
+        """Attach a context-scoped advisory artifact without exposing it to policies."""
+        if not isinstance(name, str) or not name:
+            raise DecisionInputError("advisory name must be non-empty.")
+        context_id = getattr(value, "context_id", self.context_id)
+        if context_id != self.context_id:
+            raise DecisionInputError("advisory artifact context does not match DecisionInput.")
+        return replace(self, advisory=MappingProxyType({**dict(self.advisory), name: value}))
     def lineage(self)->dict[str,object]:
         return {"context_id":self.context_id,"bundle_identity":self.bundle_identity,"projection_ids":tuple(self.projections),"artifact_identities":self.artifact_identities}
     def policy_timer(self,name:str):

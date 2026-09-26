@@ -1,4 +1,4 @@
-"""Immutable pre-deadline archive for strict historical policy replay."""
+﻿"""Immutable pre-deadline archive for strict historical policy replay."""
 from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -64,7 +64,7 @@ class OptionalSnapshotReference:
             _utc(self.observed_at,"snapshot observed_at")
 @dataclass(frozen=True)
 class ReplayArchiveCaseV1:
-    schema_version:str; archive_case_id:str; season:str; planning_gameweek:int; official_deadline:str; deadline_source:str; archive_created_at:str; context_id:str; planning_context:PlanningContext; context_verification_status:str; projection_manifest:ArchiveReference; projection_bundle:ArchiveReference; decision_report:ArchiveReference; analysis_manifest:ArchiveReference; analysis_run_id:str; account_source:str|None; market_shadow:OptionalSnapshotReference; price_signals:OptionalSnapshotReference; policy_versions:Mapping[str,str]; source_artifact_hashes:tuple[tuple[str,str],...]; chip_opportunity_forecast:OptionalSnapshotReference=OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    schema_version:str; archive_case_id:str; season:str; planning_gameweek:int; official_deadline:str; deadline_source:str; archive_created_at:str; context_id:str; planning_context:PlanningContext; context_verification_status:str; projection_manifest:ArchiveReference; projection_bundle:ArchiveReference; decision_report:ArchiveReference; analysis_manifest:ArchiveReference; analysis_run_id:str; account_source:str|None; market_shadow:OptionalSnapshotReference; price_signals:OptionalSnapshotReference; policy_versions:Mapping[str,str]; source_artifact_hashes:tuple[tuple[str,str],...]; chip_opportunity_forecast:OptionalSnapshotReference=OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE); player_availability_snapshot:OptionalSnapshotReference=OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE); player_minutes_history_snapshot:OptionalSnapshotReference=OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
     def __post_init__(self)->None:
         if self.schema_version!=REPLAY_ARCHIVE_SCHEMA_V1 or not self.archive_case_id or not self.season or not 1<=self.planning_gameweek<=38:raise ReplayArchiveError("Replay archive identity is invalid.")
         if self.context_id!=self.planning_context.context_id or self.context_verification_status!="PASS":raise ReplayArchiveError("Archive PlanningContext verification failed.")
@@ -73,6 +73,10 @@ class ReplayArchiveCaseV1:
         if prediction>=deadline:raise ReplayArchiveError("Archive prediction timestamp must be strictly before the official deadline.")
         if tuple(sorted(self.source_artifact_hashes))!=tuple(sorted(self.planning_context.artifact_hashes)):raise ReplayArchiveError("Archive artifact hashes do not match PlanningContext.")
         if self.market_shadow.production_influence not in (None,False):raise ReplayArchiveError("Market Shadow archive must have production_influence=false.")
+        # Availability/minutes snapshots are advisory and may be captured
+        # after frozen policy evaluation but before the final DecisionReport and
+        # official deadline. Their stricter report-time validation occurs in
+        # build_archive_case/validate_archive_case.
         for snapshot,label in ((self.market_shadow,"market shadow"),(self.price_signals,"price signal"),(self.chip_opportunity_forecast,"chip opportunity forecast")):
             if snapshot.status is not SnapshotStatus.UNAVAILABLE and _utc(snapshot.observed_at or "","snapshot observed_at")>prediction:raise ReplayArchiveError(f"Future {label} snapshot cannot enter the archive.")
         _utc(self.archive_created_at,"archive_created_at")
@@ -129,6 +133,46 @@ def _chip_forecast_from_decision(root:Path,decision:DecisionReportV2,prediction:
     if forecast.context_id!=decision.context_id or forecast.source.get("prediction_timestamp")!=prediction.isoformat():raise ReplayArchiveError("Chip opportunity forecast context/PIT mismatch.")
     return OptionalSnapshotReference(SnapshotStatus.AVAILABLE,reference.path,reference.sha256,prediction.isoformat(),forecast.schema_version,forecast.coverage,False)
 
+def _advisory_snapshot_status(coverage: Mapping[str, Any] | None) -> bool:
+    status = str((coverage or {}).get("status", "AVAILABLE")).upper()
+    return status not in {"UNAVAILABLE", "SKIPPED_AFTER_DEADLINE", "SKIPPED_UNVERIFIED_DEADLINE"}
+
+
+def _availability_snapshot_from_decision(root:Path,decision:DecisionReportV2,prediction:datetime,
+                                         decision_at:datetime,deadline:datetime)->OptionalSnapshotReference:
+    reference=decision.player_availability_snapshot
+    if reference is None:return OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    path=_safe(root,reference.path)
+    if not path.is_file() or _sha(path)!=reference.sha256:return OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    try:
+        from fpl_engine.planning import load_player_availability_snapshot
+        snapshot=load_player_availability_snapshot(path)
+    except Exception as exc:raise ReplayArchiveError("Player availability snapshot artifact is invalid.") from exc
+    if snapshot.context_id!=decision.context_id or snapshot.source.get("prediction_timestamp")!=prediction.isoformat():
+        raise ReplayArchiveError("Player availability snapshot context/PIT mismatch.")
+    stamp=_utc(snapshot.generated_at,"availability advisory cutoff")
+    if stamp>decision_at or stamp>=deadline:raise ReplayArchiveError("Availability advisory snapshot was not captured before decision finalization/deadline.")
+    if not _advisory_snapshot_status(snapshot.coverage):return OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    return OptionalSnapshotReference(SnapshotStatus.AVAILABLE,reference.path,reference.sha256,stamp.isoformat(),snapshot.method_version,snapshot.coverage,False)
+
+
+def _minutes_history_snapshot_from_decision(root:Path,decision:DecisionReportV2,prediction:datetime,
+                                            decision_at:datetime,deadline:datetime)->OptionalSnapshotReference:
+    reference=decision.player_minutes_history_snapshot
+    if reference is None:return OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    path=_safe(root,reference.path)
+    if not path.is_file() or _sha(path)!=reference.sha256:return OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    try:
+        from fpl_engine.planning import load_player_minutes_history_snapshot
+        snapshot=load_player_minutes_history_snapshot(path)
+    except Exception as exc:raise ReplayArchiveError("Player minutes history snapshot artifact is invalid.") from exc
+    if snapshot.context_id!=decision.context_id or snapshot.provenance.get("planning_prediction_timestamp")!=prediction.isoformat():
+        raise ReplayArchiveError("Player minutes history snapshot context/PIT mismatch.")
+    stamp=_utc(snapshot.cutoff,"minutes advisory cutoff")
+    if stamp>decision_at or stamp>=deadline:raise ReplayArchiveError("Minutes advisory snapshot was not captured before decision finalization/deadline.")
+    if not _advisory_snapshot_status(snapshot.coverage):return OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+    return OptionalSnapshotReference(SnapshotStatus.AVAILABLE,reference.path,reference.sha256,stamp.isoformat(),snapshot.provenance.get("source",snapshot.schema_version),snapshot.coverage,False)
+
 def _price_signals_from_decision(root:Path,decision:DecisionReportV2,prediction:datetime)->OptionalSnapshotReference:
     # V3 currently serializes only availability, never a snapshot reference.  Do not infer one.
     raw=decision.v3_result.payload if decision.v3_result is not None else {}
@@ -156,10 +200,11 @@ def build_archive_case(root:Path,analysis_manifest_path:Path,archive_created_at:
     except ValueError as exc:
         raise ReplayArchiveError("Projection artifact integrity failed.") from exc
     if integrity is None or integrity.manifest_sha256!=context.manifest_sha256 or tuple(sorted(integrity.artifact_hashes))!=tuple(sorted(context.artifact_hashes)):raise ReplayArchiveError("Projection artifact hashes do not match PlanningContext.")
-    market=_snapshot_from_manifest(root,manifest_path.parent,manifest_raw,prediction); price=_price_signals_from_decision(root,decision,prediction); forecast=_chip_forecast_from_decision(root,decision,prediction)
+    decision_at=_utc(decision.created_at,"decision created_at")
+    market=_snapshot_from_manifest(root,manifest_path.parent,manifest_raw,prediction); price=_price_signals_from_decision(root,decision,prediction); forecast=_chip_forecast_from_decision(root,decision,prediction); availability=_availability_snapshot_from_decision(root,decision,prediction,decision_at,deadline); minutes_history=_minutes_history_snapshot_from_decision(root,decision,prediction,decision_at,deadline)
     created=(archive_created_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
     analysis_ref=_reference(root,analysis_path,"analysis_manifest_v2"); decision_ref=_reference(root,decision_path,decision.schema_version); bundle_ref=_reference(root,bundle_path); manifest_ref=_reference(root,manifest_path)
-    return ReplayArchiveCaseV1(REPLAY_ARCHIVE_SCHEMA_V1,_case_id(context,analysis_ref.sha256,decision_ref.sha256),context.season,context.gameweek,context.deadline,"PlanningContext.deadline",created,context.context_id,context,"PASS",manifest_ref,bundle_ref,decision_ref,analysis_ref,analysis.analysis_run_id,"PlanningContext.source_state_timestamp",market,price,_policy_versions(decision),context.artifact_hashes,forecast)
+    return ReplayArchiveCaseV1(REPLAY_ARCHIVE_SCHEMA_V1,_case_id(context,analysis_ref.sha256,decision_ref.sha256),context.season,context.gameweek,context.deadline,"PlanningContext.deadline",created,context.context_id,context,"PASS",manifest_ref,bundle_ref,decision_ref,analysis_ref,analysis.analysis_run_id,"PlanningContext.source_state_timestamp",market,price,_policy_versions(decision),context.artifact_hashes,forecast,availability,minutes_history)
 def archive_directory(root:Path,case:ReplayArchiveCaseV1)->Path:return Path(root).resolve()/"data"/"processed"/"historical_replay_cases"/case.season.replace("/","-")/f"GW{case.planning_gameweek:02d}"/case.archive_case_id
 def write_archive_case(root:Path,case:ReplayArchiveCaseV1)->Path:
     directory=archive_directory(root,case); target=directory/"archive_case.json"; payload=canonical_json(case.to_dict())+b"\n"
@@ -180,7 +225,9 @@ def parse_archive_case(path:Path|Mapping[str,Any])->ReplayArchiveCaseV1:
         def snapshot(key:str)->OptionalSnapshotReference:
             value=raw[key]; return OptionalSnapshotReference(SnapshotStatus(value["status"]),value.get("path"),value.get("sha256"),value.get("observed_at"),value.get("source"),value.get("coverage"),value.get("production_influence"))
         forecast=snapshot("chip_opportunity_forecast") if isinstance(raw.get("chip_opportunity_forecast"),Mapping) else OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
-        return ReplayArchiveCaseV1(raw["schema_version"],raw["archive_case_id"],raw["season"],int(raw["planning_gameweek"]),raw["official_deadline"],raw["deadline_source"],raw["archive_created_at"],raw["context_id"],context,raw["context_verification_status"],ref("projection_manifest"),ref("projection_bundle"),ref("decision_report"),ref("analysis_manifest"),raw["analysis_run_id"],raw.get("account_source"),snapshot("market_shadow"),snapshot("price_signals"),raw.get("policy_versions",{}),tuple((str(x[0]),str(x[1])) for x in raw["source_artifact_hashes"]),forecast)
+        availability=snapshot("player_availability_snapshot") if isinstance(raw.get("player_availability_snapshot"),Mapping) else OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+        minutes_history=snapshot("player_minutes_history_snapshot") if isinstance(raw.get("player_minutes_history_snapshot"),Mapping) else OptionalSnapshotReference(SnapshotStatus.UNAVAILABLE)
+        return ReplayArchiveCaseV1(raw["schema_version"],raw["archive_case_id"],raw["season"],int(raw["planning_gameweek"]),raw["official_deadline"],raw["deadline_source"],raw["archive_created_at"],raw["context_id"],context,raw["context_verification_status"],ref("projection_manifest"),ref("projection_bundle"),ref("decision_report"),ref("analysis_manifest"),raw["analysis_run_id"],raw.get("account_source"),snapshot("market_shadow"),snapshot("price_signals"),raw.get("policy_versions",{}),tuple((str(x[0]),str(x[1])) for x in raw["source_artifact_hashes"]),forecast,availability,minutes_history)
     except (KeyError,TypeError,ValueError,IndexError) as exc:raise ReplayArchiveError("Archive case is invalid.") from exc
 
 def validate_archive_case(root:Path,path:Path)->ArchiveValidation:
@@ -210,14 +257,24 @@ def validate_archive_case(root:Path,path:Path)->ArchiveValidation:
             integrity=None
         checks["projection_artifacts"]=bool(integrity and integrity.manifest_sha256==case.planning_context.manifest_sha256 and tuple(sorted(integrity.artifact_hashes))==tuple(sorted(case.source_artifact_hashes)) and _sha(bundle)==case.projection_bundle.sha256 and _sha(manifest)==case.projection_manifest.sha256)
         if not checks["projection_artifacts"]:raise ReplayArchiveError("Projection artifact integrity failed.")
-        for label,snapshot in (("market_shadow",case.market_shadow),("price_signals",case.price_signals),("chip_opportunity_forecast",case.chip_opportunity_forecast)):
+        for label,snapshot in (("market_shadow",case.market_shadow),("price_signals",case.price_signals),("chip_opportunity_forecast",case.chip_opportunity_forecast),("player_availability_snapshot",case.player_availability_snapshot),("player_minutes_history_snapshot",case.player_minutes_history_snapshot)):
             if snapshot.status is SnapshotStatus.UNAVAILABLE: checks[label]=True; continue
-            target=_safe(root,snapshot.path or ""); checks[label]=target.is_file() and _sha(target)==snapshot.sha256 and _utc(snapshot.observed_at or "",label)<=_utc(case.planning_context.prediction_timestamp,"prediction")
+            target=_safe(root,snapshot.path or "")
+            limit=_utc(decision.created_at,"decision") if label in {"player_availability_snapshot","player_minutes_history_snapshot"} else _utc(case.planning_context.prediction_timestamp,"prediction")
+            checks[label]=target.is_file() and _sha(target)==snapshot.sha256 and _utc(snapshot.observed_at or "",label)<=limit and _utc(snapshot.observed_at or "",label)<_utc(case.official_deadline,"deadline")
             if label=="market_shadow":checks[label]=checks[label] and snapshot.production_influence is False
             if label=="chip_opportunity_forecast" and checks[label]:
                 from fpl_engine.planning import load_chip_opportunity_forecast
                 forecast=load_chip_opportunity_forecast(target)
                 checks[label]=forecast.context_id==case.context_id and forecast.source.get("prediction_timestamp")==case.planning_context.prediction_timestamp
+            if label=="player_availability_snapshot" and checks[label]:
+                from fpl_engine.planning import load_player_availability_snapshot
+                availability=load_player_availability_snapshot(target)
+                checks[label]=availability.context_id==case.context_id and availability.source.get("prediction_timestamp")==case.planning_context.prediction_timestamp and availability.generated_at==snapshot.observed_at
+            if label=="player_minutes_history_snapshot" and checks[label]:
+                from fpl_engine.planning import load_player_minutes_history_snapshot
+                history=load_player_minutes_history_snapshot(target)
+                checks[label]=history.context_id==case.context_id and history.provenance.get("planning_prediction_timestamp")==case.planning_context.prediction_timestamp and history.cutoff==snapshot.observed_at
             if not checks[label]:raise ReplayArchiveError(f"{label} snapshot integrity or PIT failed.")
     except ReplayArchiveError as exc:reasons.append(str(exc))
     status=ArchiveStatus.PRE_DEADLINE_COMPLETE if checks and all(checks.values()) else ArchiveStatus.INVALID

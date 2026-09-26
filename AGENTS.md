@@ -1701,3 +1701,57 @@ Verified:
 
 Next:
 - no release action is required until another explicitly requested desktop change.
+
+## 2026-09-25 — ROADMAP-P2.1 — Player Availability & Minutes Risk V1
+
+Completed:
+- added a typed, immutable, advisory-only `PlayerAvailabilitySnapshot` carrying official FPL availability/status/news provenance and distinct minutes-risk evidence;
+- enforces point-in-time boundaries for official metadata, news, and completed-fixture minutes; unavailable recent-minute sequences remain explicit unknowns;
+- attaches the context-bound snapshot to `DecisionInput` as policy-inaccessible advisory data, persists it under `data/processed/player_availability_snapshots/<projection_run_id>/`, and references it from typed decision reports and replay archives;
+- added a compact Analysis risk card and optional trust note without changing V22, transfer policies, captaincy, chip logic, or account state.
+
+Verified:
+- local accepted-bundle diagnostic created a referenced immutable snapshot for 26 relevant players: official-status coverage 100%, recent-minute-sequence coverage 0%, and `production_influence=false`;
+- focused availability, report-schema, replay, trust, and desktop-decision suite: 62 passed; changed-module compile check passed; no provider calls or account mutation.
+
+Next:
+- acquire point-in-time completed-fixture minute sequences before treating minutes risk as more than an explicitly unknown advisory signal; no build is required unless a desktop release is requested.
+
+## 2026-09-26 — ROADMAP-P2.2 — Point-in-time player minutes history
+
+Completed:
+- added immutable advisory-only completed-fixture player-minute history snapshots with strict source/outcome availability and kickoff cutoff checks; fixture ID is primary so DGWs are retained independently and BGWs are not invented,
+- saves companion artifacts under data/processed/player_minutes_history_snapshots/<projection_run_id>/, carries SHA-256 references in DecisionReportV2 and Replay Archive, and feeds only existing Player Availability Risk advisory evidence,
+- desktop decision runs use only an explicitly retained local sidecar; absent evidence creates an explicit UNAVAILABLE snapshot and never triggers an external fetch.
+
+Verified:
+- local diagnostic for 20260921T204826Z requested 26 relevant players and found 0 safe completed appearances; the immutable diagnostic snapshot is UNAVAILABLE.
+
+Next:
+- acquire timestamped local Official FPL element-summary/finished-fixture snapshots through an explicit refresh path before treating minutes risk as calibrated evidence.
+
+## 2026-09-26 — ROADMAP-P2.3 — Official FPL player-history acquisition
+
+Completed:
+- added the explicit, read-only refresh-player-history CLI command using existing OfficialFPLAdapter, five-minute configurable HttpCache and RawStore; it is never called by desktop startup, report loading or replay,
+- uses the per-player official element-summary/<player_id>/ endpoint plus official fixture completion state, deduplicates squad/decision/captain/top-target candidates, saves immutable acquisition receipts beside a canonical bundle, and retains raw snapshot/checksum/cache/observed-time provenance,
+- P2.2 consumes only receipts observed no later than the PlanningContext cutoff, leaving post-deadline refresh data retained but ineligible for an older decision.
+
+Verified:
+- one explicit current acquisition requested 28 players, made 29 Official FPL requests, produced 140 history rows over 42 fixtures with 0 failures, and saved player_minutes_history_records_527d7b879919d1578d17099b.json; its 2026-09-26 observation is correctly rejected for the existing 2026-09-21 GW6 PlanningContext.
+
+Next:
+- execute the explicit refresh before a future official deadline and then run a new decision to obtain calibrated, decision-time recent-minutes evidence; no desktop build is required until explicitly requested.
+
+
+## 2026-09-26 - ROADMAP-P2.4 - Automatic pre-deadline advisory capture
+
+Completed:
+- Run new analysis passes an opt-in flag to the external Decision worker only; startup, loading and replay remain acquisition-free.
+- after Greedy/V1/V2/V3 and preview freeze, the worker deduplicates the current squad, decision paths, previews/captaincy and ten current targets, then applies a deadline gate before constructing Official FPL transport.
+- eligible capture reuses the P2.3 adapter/cache/RawStore service and writes immutable advisory minutes/availability snapshots before final DecisionReport serialization.
+- a pre-deadline advisory capture has its own recorded cutoff; it is context-bound but does not alter the PlanningContext or any policy output. Archive validation preserves this separate pre-deadline boundary.
+- post-deadline or unknown-deadline runs skip provider access explicitly; acquisition failure remains advisory.
+
+Next:
+- the next real pre-deadline Run new analysis can accumulate valid Official FPL advisory evidence automatically. No EXE build is required until explicitly requested.

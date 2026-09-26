@@ -26,7 +26,7 @@ class LocalFPLSnapshotStore:
     def __init__(self,root:Path,*,raw_store:RawStore):
         if not isinstance(raw_store,RawStore): raise LocalFPLSnapshotValidationError("raw_store must be a RawStore")
         self.root=Path(root).resolve(); self._raw=raw_store
-    def capture(self,payload_name:str,result:FPLApiResult,*,snapshot_timestamp:datetime)->LocalFPLSnapshot:
+    def capture(self,payload_name:str,result:FPLApiResult,*,snapshot_timestamp:datetime,season:str|None=None)->LocalFPLSnapshot:
         if payload_name not in {"bootstrap_static","fixtures","gameweek_metadata","player_summary"}: raise LocalFPLSnapshotValidationError("Unsupported local FPL payload name")
         if not isinstance(result,FPLApiResult): raise LocalFPLSnapshotValidationError("result must be an FPLApiResult")
         when=_utc(snapshot_timestamp); directory=self.root/"official_fpl_api"/_name(when); receipt=directory/f"{payload_name}.snapshot.json"
@@ -38,7 +38,7 @@ class LocalFPLSnapshotStore:
             # preserves append-only semantics for each payload while allowing
             # those records to share the timestamp directory.
             directory.mkdir(parents=True,exist_ok=True)
-            record={"snapshot_timestamp":when.isoformat().replace("+00:00","Z"),"payload_name":payload_name,"checksum":raw.checksum,"content_length":raw.content_length,"raw_snapshot":raw.model_dump(mode="json"),"source_url":raw.source_url}
+            record={"snapshot_timestamp":when.isoformat().replace("+00:00","Z"),"payload_name":payload_name,"checksum":raw.checksum,"content_length":raw.content_length,"raw_snapshot":raw.model_dump(mode="json"),"source_url":raw.source_url,**({"season":season} if isinstance(season,str) and season else {})}
             with receipt.open("x",encoding="utf-8") as stream: json.dump(record,stream,sort_keys=True,separators=(",",":")); stream.flush(); os.fsync(stream.fileno())
         except FileExistsError as exc: raise LocalFPLSnapshotExistsError(f"Local FPL snapshot already exists at {directory}") from exc
         except (OSError,RawStoreError) as exc: raise LocalFPLSnapshotStorageError("Cannot persist local FPL snapshot") from exc

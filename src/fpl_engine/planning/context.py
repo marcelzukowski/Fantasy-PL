@@ -144,6 +144,33 @@ def verify_projection_artifacts(
     )
 
 
+def _verified_official_deadline(
+    context_payload: Mapping[str, Any], *, gameweek: int, prediction_timestamp: str,
+) -> str | None:
+    """Accept new deadline metadata only when its local provenance is complete."""
+    official_deadline = context_payload.get("official_deadline")
+    if official_deadline is None:
+        return None
+    if context_payload.get("deadline_verification_status") != "VERIFIED":
+        return None
+    try:
+        declared_gameweek = int(context_payload.get("planning_gameweek"))
+    except (TypeError, ValueError):
+        return None
+    if declared_gameweek != gameweek:
+        return None
+    if context_payload.get("deadline_source") != "official_fpl_api.bootstrap_static.local_snapshot":
+        return None
+    try:
+        observed_at = _timestamp(context_payload.get("deadline_observed_at"), "deadline_observed_at")
+        deadline = _timestamp(official_deadline, "official_deadline")
+    except PlanningContextError:
+        return None
+    if observed_at is None or deadline is None or observed_at >= prediction_timestamp:
+        return None
+    return deadline
+
+
 def _freshness(bundle: Mapping[str, Any]) -> tuple[tuple[str, str | None, str | None, str | None], ...]:
     rows = bundle.get("data_freshness")
     if not isinstance(rows, list):
@@ -267,12 +294,24 @@ def build_planning_context(
     if not 1 <= gameweek <= 38 or bank < 0 or not 0 <= free_transfers <= 5 or simulation_count < 1:
         raise PlanningContextError("PlanningContext contains out-of-range account or projection values.")
     context_payload = prediction_context if isinstance(prediction_context, Mapping) else {}
-    deadline = next((context_payload.get(key) for key in ("deadline", "target_deadline", "deadline_utc") if context_payload.get(key) is not None), None)
-    model_versions_raw = manifest.get("model_versions", ())
-    model_versions = tuple(sorted(str(value) for value in model_versions_raw)) if isinstance(model_versions_raw, list) else ()
     prediction_timestamp = _timestamp(bundle.get("prediction_timestamp"), "prediction_timestamp")
     if prediction_timestamp is None:
         raise PlanningContextError("PlanningContext requires a projection prediction timestamp.")
+    verified_official_deadline = _verified_official_deadline(
+        context_payload, gameweek=gameweek, prediction_timestamp=prediction_timestamp,
+    )
+    # Legacy projection contexts did not carry verification metadata.  They
+    # remain readable/unverified, while new official deadline metadata fails
+    # closed unless all validation above succeeds.
+    deadline = verified_official_deadline
+    if deadline is None and context_payload.get("official_deadline") is None:
+        deadline = next((
+            context_payload.get(key)
+            for key in ("deadline", "target_deadline", "deadline_utc")
+            if context_payload.get(key) is not None
+        ), None)
+    model_versions_raw = manifest.get("model_versions", ())
+    model_versions = tuple(sorted(str(value) for value in model_versions_raw)) if isinstance(model_versions_raw, list) else ()
     return PlanningContext(
         schema_version=PLANNING_CONTEXT_SCHEMA,
         season=season,

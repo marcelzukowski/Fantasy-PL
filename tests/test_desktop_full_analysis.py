@@ -137,3 +137,18 @@ def test_duplicate_full_analysis_is_blocked(qapp):
         assert "already running" in window.statusBar().currentMessage()
     finally:
         window.close()
+
+
+def test_run_new_analysis_is_the_only_full_workflow_trigger_for_advisory_capture(qapp, monkeypatch):
+    window = MainWindow(ROOT)
+    try:
+        state = window._state_from_ui()
+        bundle = ROOT / "data" / "processed" / "predictions" / "2026-27" / "test-run" / "shadow_projection_bundle.json"
+        monkeypatch.setattr(main_window_module, "decision_bundle_for_state", lambda *_: bundle)
+        monkeypatch.setattr(main_window_module, "projection_run_summary", lambda *_: {"season": state.season, "gameweek": state.gameweek})
+        monkeypatch.setattr(window, "start_decision_run", lambda: None)
+        assert not getattr(window, "_capture_advisory_history_next", False)
+        window.start_full_analysis()
+        assert window._capture_advisory_history_next is True
+    finally:
+        window.close()

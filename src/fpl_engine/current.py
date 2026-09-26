@@ -21,6 +21,8 @@ from uuid import NAMESPACE_URL, uuid5
 
 import yaml
 
+from desktop_app.gameweek_deadlines import load_validated_official_deadline
+
 from fpl_engine.config.loader import load_scoring_rules_config
 from fpl_engine.data.database import CanonicalDatabase, CanonicalIntegrityError
 from fpl_engine.data.local_fpl_snapshots import (
@@ -159,6 +161,33 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(_jsonable(value), indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _prediction_context_payload(
+    context: PredictionContext,
+    *,
+    project_root: Path,
+    bootstrap: "CurrentSourceRecord",
+) -> dict[str, object]:
+    """Persist one verified official deadline only when its source is exact.
+
+    This reads the existing append-only local bootstrap receipt; it does not
+    fetch, refresh or otherwise mutate Official FPL data.
+    """
+    payload = dict(context.model_dump(mode="python"))
+    payload["planning_gameweek"] = context.target_gameweek
+    deadline = load_validated_official_deadline(
+        project_root,
+        season=context.target_season,
+        planning_gameweek=context.target_gameweek,
+        source_checksum=bootstrap.checksum,
+        source_snapshot_timestamp=bootstrap.source_snapshot_timestamp,
+    )
+    if deadline is None:
+        payload["deadline_verification_status"] = "UNVERIFIED"
+        return payload
+    payload.update(deadline.to_prediction_context_fields())
+    return payload
+
+
 @dataclass(frozen=True)
 class CurrentSourceRecord:
     source: str
@@ -240,6 +269,7 @@ class OfficialCurrentDataSource:
                 try:
                     self.local_snapshots.capture(
                         name, result, snapshot_timestamp=result.response.stored_at,
+                        season=context.target_season,
                     )
                 except LocalFPLSnapshotExistsError:
                     warnings.append(f"Local {name} archive already exists at this prediction timestamp.")
@@ -1739,7 +1769,14 @@ class CurrentPredictionPipeline:
                     run_dir / "market_shadow.json"
                 )
 
-            _write_json(artifacts["prediction_context"], context.model_dump(mode="python"))
+            _write_json(
+                artifacts["prediction_context"],
+                _prediction_context_payload(
+                    context,
+                    project_root=self.project_root,
+                    bootstrap=source.bootstrap,
+                ),
+            )
             _write_json(artifacts["source_provenance"], provenance)
             _write_json(artifacts["source_freshness"], [
                 {

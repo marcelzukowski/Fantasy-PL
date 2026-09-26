@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import os
 import shutil
 import subprocess
+from hashlib import sha256
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt
 from PySide6.QtGui import QIcon, QPixmap
@@ -294,14 +295,18 @@ class MainWindow(QMainWindow):
             "Chip strategy",
             DetailSummary("Chip recommendation will appear here."),
         )
+        risk, self.analysis_availability_summary = card(
+            "Player risk",
+            DetailSummary("Availability and minutes-risk warnings will appear after a valid Decision Engine result."),
+        )
         outlook, self.analysis_chip_outlook_summary = card(
             "Chip opportunity outlook",
             DetailSummary("Strategic chip forecast will appear after a valid Decision Engine result."),
         )
-        self.analysis_transfer_card = transfer; self.analysis_captain_card = captain; self.analysis_chip_card = chips; self.analysis_chip_outlook_card = outlook
+        self.analysis_transfer_card = transfer; self.analysis_captain_card = captain; self.analysis_chip_card = chips; self.analysis_chip_outlook_card = outlook; self.analysis_availability_card = risk
         transfer.setMinimumHeight(360)
-        captain.setMinimumHeight(205); chips.setMinimumHeight(205); outlook.setMinimumHeight(150)
-        side_cards = QVBoxLayout(); side_cards.setSpacing(10); side_cards.addWidget(captain); side_cards.addWidget(chips); side_cards.addWidget(outlook)
+        captain.setMinimumHeight(205); chips.setMinimumHeight(205); risk.setMinimumHeight(145); outlook.setMinimumHeight(150)
+        side_cards = QVBoxLayout(); side_cards.setSpacing(10); side_cards.addWidget(captain); side_cards.addWidget(chips); side_cards.addWidget(risk); side_cards.addWidget(outlook)
         results.addWidget(transfer, 3); results.addLayout(side_cards, 1); layout.addLayout(results, 2)
         roll, self.analysis_roll_summary = card(
             "If you roll",
@@ -456,8 +461,25 @@ class MainWindow(QMainWindow):
             projection_changed=projection_changed,
             report_status=active.status if active is not None else None,
             chip_forecast_status=("AVAILABLE" if decision is not None and decision.chip_opportunity_forecast is not None else "UNAVAILABLE"),
+            availability_status=("AVAILABLE" if decision is not None and decision.player_availability_snapshot is not None else "UNAVAILABLE"),
+            minutes_history_status=self._minutes_history_trust_status(decision),
         ))
         self.analysis_trust_card.set_model(model)
+    def _minutes_history_trust_status(self, decision: DecisionReportV2 | None) -> str:
+        reference = getattr(decision, "player_minutes_history_snapshot", None) if decision is not None else None
+        if reference is None:
+            return "UNAVAILABLE"
+        try:
+            from fpl_engine.planning import load_player_minutes_history_snapshot
+            path = (self.root / reference.path).resolve()
+            path.relative_to(self.root.resolve())
+            if not path.is_file() or sha256(path.read_bytes()).hexdigest() != reference.sha256:
+                return "UNAVAILABLE"
+            snapshot = load_player_minutes_history_snapshot(path)
+            return str(snapshot.coverage.get("status", "UNAVAILABLE"))
+        except (OSError, ValueError):
+            return "UNAVAILABLE"
+
     def _projection_for_id(self, run_id: str | None) -> ProjectionRun | None:
         return next((run for run in self._projection_runs if run.run_id == run_id), None)
 
@@ -852,6 +874,10 @@ class MainWindow(QMainWindow):
         self._set_full_analysis_state(FullAnalysisState.PROJECTIONS, detail="Reusing matching production projections.")
         self._append_engine_log(f"=== FULL GW ANALYSIS ===\nVALIDATING: PASS\nPROJECTIONS: reused {bundle.parent}")
         self._set_full_analysis_state(FullAnalysisState.DECISION, detail="Running Decision Engine...")
+        # Only this explicit user action permits the external Decision worker
+        # to collect optional Official FPL history. Startup, report loading and
+        # the standalone Decision button deliberately leave it disabled.
+        self._capture_advisory_history_next = True
         self.start_decision_run()
 
     def _full_analysis_after_decision(self, *, succeeded: bool) -> None:
@@ -904,7 +930,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _money(value) -> str:
-        return "Ă˘â‚¬â€ť" if value is None else f"£{int(value) / 10:.1f}m"
+        return "\u2014" if value is None else f"\u00A3{int(value) / 10:.1f}m"
 
     def _render_decision_result(self, report: DecisionReportV2) -> None:
         selling = self._current_state.selling_prices_tenths if self._current_state else {}
@@ -912,6 +938,7 @@ class MainWindow(QMainWindow):
         self._render_transfer_plans(report, selling)
         self._render_strategic_action(report, self._current_state or self._state_from_ui())
         self._render_chip_opportunity_outlook(report)
+        self._render_player_availability_risk(report)
 
     def _render_chip_opportunity_outlook(self, report: DecisionReportV2) -> None:
         from fpl_engine.planning.chip_opportunity_forecast import ChipOpportunityForecastError, load_chip_opportunity_forecast
@@ -948,6 +975,65 @@ class MainWindow(QMainWindow):
             f"Status: {forecast.status.value} | GW{forecast.forecast_start_gw}-GW{forecast.forecast_end_gw}"
         )
 
+    def _render_player_availability_risk(self, report: DecisionReportV2) -> None:
+        from fpl_engine.planning.player_availability_risk import PlayerAvailabilityRiskError, RiskLevel, load_player_availability_snapshot
+        reference = report.player_availability_snapshot
+        if reference is None:
+            self.analysis_availability_summary.setText("Player risk: UNAVAILABLE\nOptional availability data is not attached to this decision.")
+            return
+        try:
+            path = (self.root / reference.path).resolve()
+            path.relative_to(self.root.resolve())
+            if not path.is_file() or sha256(path.read_bytes()).hexdigest() != reference.sha256:
+                raise PlayerAvailabilityRiskError("artifact integrity failed")
+            snapshot = load_player_availability_snapshot(path)
+            if snapshot.context_id != report.context_id:
+                raise PlayerAvailabilityRiskError("context mismatch")
+        except (PlayerAvailabilityRiskError, ValueError, OSError):
+            self.analysis_availability_summary.setText("Player risk: UNAVAILABLE\nSaved advisory artifact cannot be verified for this decision.")
+            return
+        coverage = snapshot.coverage
+        official_coverage = coverage.get("official_availability_coverage")
+        minutes_coverage = coverage.get("recent_minutes_coverage")
+        availability = "AVAILABLE" if official_coverage == 1 else "PARTIAL" if isinstance(official_coverage, (int, float)) else "UNAVAILABLE"
+        minutes_history = "AVAILABLE" if isinstance(minutes_coverage, (int, float)) and minutes_coverage > 0 else "UNAVAILABLE"
+        history_by_player = {}
+        minute_reference = getattr(report, "player_minutes_history_snapshot", None)
+        if minute_reference is not None:
+            try:
+                from fpl_engine.planning import load_player_minutes_history_snapshot
+                minute_path = (self.root / minute_reference.path).resolve()
+                minute_path.relative_to(self.root.resolve())
+                if not minute_path.is_file() or sha256(minute_path.read_bytes()).hexdigest() != minute_reference.sha256:
+                    raise PlayerAvailabilityRiskError("minutes history artifact integrity failed")
+                minute_snapshot = load_player_minutes_history_snapshot(minute_path)
+                if minute_snapshot.context_id != report.context_id:
+                    raise PlayerAvailabilityRiskError("minutes history context mismatch")
+                minutes_history = str(minute_snapshot.coverage.get("status", "UNAVAILABLE"))
+                history_by_player = {row.player_id: row for row in minute_snapshot.features}
+            except (PlayerAvailabilityRiskError, ValueError, OSError):
+                minutes_history = "UNAVAILABLE"
+        lines = [
+            f"Availability: {availability}",
+            f"Minutes history: {minutes_history}",
+        ]
+        state = self._current_state or self._state_from_ui()
+        owned = set(state.player_ids)
+        incoming = {str(player_id) for player_id in report.recommendation.get("transfers_in", ())}
+        preview = report.preview_for("short_term") or report.preview_for("strategic")
+        captains = {preview.captain, preview.vice_captain} if preview is not None else set()
+        rows = [row for row in snapshot.entries if row.overall_risk in {RiskLevel.MEDIUM, RiskLevel.HIGH}]
+        for label, ids in (("Transfer target", incoming), ("Captaincy", captains), ("Current squad", owned)):
+            for row in rows:
+                if row.player_id in ids:
+                    reason = row.reasons[0] if row.reasons else "No structured reason available."
+                    sequence = history_by_player.get(row.player_id)
+                    recent = " ? ".join(str(value) for value in sequence.raw_recent_sequence) if sequence and sequence.raw_recent_sequence else "unavailable"
+                    lines.append(f"{label}: {row.player_name or row.player_id} | {row.overall_risk.value} | recent: {recent} | {reason}")
+        if len(lines) == 2:
+            lines.append("No MEDIUM/HIGH availability or minutes-risk warnings in the evaluated scope.")
+        self.analysis_availability_summary.setText("\n".join(lines))
+        self.analysis_availability_summary.setToolTip("Advisory only. It does not change V22 projections, transfer plans, captaincy, or chips.")
     def _clear_transfer_targets(self) -> None:
         self._transfer_targets = ()
         self._transfer_target_in_ids = ()
@@ -1176,20 +1262,21 @@ class MainWindow(QMainWindow):
             return ", ".join(
                 str(row.get("name", player_id)) if isinstance((row := metadata.get(player_id, {})), dict) else player_id
                 for player_id in values
-            ) or "Ă˘â‚¬â€ť"
+            ) or "\u2014"
 
         def money(value: object) -> str:
-            return self._money(value) if type(value) is int else "Ă˘â‚¬â€ť"
+            return self._money(value) if type(value) is int else "\u2014"
 
         before = action.get("free_transfers_before")
         after = action.get("free_transfers_after")
         utility = action.get("utility")
+        dash = "\u2014"
         lines = []
         if action.get("action") == "ROLL_FT" or (not outgoing and not incoming):
             lines.extend((
                 "Strategic action: ROLL FT",
                 "No transfer recommended now.",
-                f"Free transfers: {before if type(before) is int else 'Ă˘â‚¬â€ť'} → {after if type(after) is int else 'Ă˘â‚¬â€ť'} next GW",
+                f"Free transfers: {before if type(before) is int else dash} \u2192 {after if type(after) is int else dash} next GW",
                 f"Current bank: {self._money(state.bank_tenths)}",
                 "Reason: Existing Optimizer V2 strategic action retains the transfer option.",
             ))
@@ -1198,10 +1285,10 @@ class MainWindow(QMainWindow):
                 "Strategic action: MAKE TRANSFER",
                 f"OUT: {names(outgoing)}",
                 f"IN: {names(incoming)}",
-                f"Transfers used: {action.get('free_transfers_used', 'Ă˘â‚¬â€ť')}",
-                f"Hit: {action.get('hit_cost', 'Ă˘â‚¬â€ť')} pts",
+                f"Transfers used: {action.get('free_transfers_used', '\u2014')}",
+                f"Hit: {action.get('hit_cost', '\u2014')} pts",
                 f"Bank after: {money(action.get('resulting_bank'))}",
-                f"Free transfers: {before if type(before) is int else 'Ă˘â‚¬â€ť'} → {after if type(after) is int else 'Ă˘â‚¬â€ť'} next GW",
+                f"Free transfers: {before if type(before) is int else dash} \u2192 {after if type(after) is int else dash} next GW",
             ))
         if isinstance(utility, (int, float)) and not isinstance(utility, bool):
             lines.append(f"V2 utility: {float(utility):.6f}")
@@ -1357,8 +1444,8 @@ class MainWindow(QMainWindow):
                 lines.append("IN: " + ", ".join(name(player_id) for player_id in plan.transfers_in))
             lines.append(
                 f"Transfers: {plan.transfer_count} | FT used: "
-                f"{plan.free_transfers_used if plan.free_transfers_used is not None else 'Ă˘â‚¬â€ť'} | "
-                f"Hit: {plan.hit_cost if plan.hit_cost is not None else 'Ă˘â‚¬â€ť'} pts | "
+                f"{plan.free_transfers_used if plan.free_transfers_used is not None else '\u2014'} | "
+                f"Hit: {plan.hit_cost if plan.hit_cost is not None else '\u2014'} pts | "
                 f"Bank after: {money(plan.resulting_bank)}"
             )
             lines.append(
@@ -1395,6 +1482,8 @@ class MainWindow(QMainWindow):
         if any(process is not None and process.state() != QProcess.ProcessState.NotRunning for process in (self.engine_process, self.account_process, self.chip_process)):
             QMessageBox.information(self, "Engine busy", "Wait for the current process to finish.")
             return
+        capture_advisory_history = bool(getattr(self, "_capture_advisory_history_next", False))
+        self._capture_advisory_history_next = False
         self._clear_captaincy_result()
         self._clear_transfer_targets()
         self._clear_strategy_previews()
@@ -1407,6 +1496,7 @@ class MainWindow(QMainWindow):
             arguments = decision_arguments(
                 request_path=request, prediction_bundle=bundle,
                 output_dir=self.root / "data" / "processed" / "desktop_decisions" / state.season.replace("/", "-"),
+                capture_advisory_history=capture_advisory_history,
             )
         except (DesktopStateError, DesktopEngineError) as exc:
             self._set_decision_run_state(DecisionRunState.ERROR, "Decision engine needs a matching saved production projection run.")

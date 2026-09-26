@@ -187,3 +187,27 @@ def test_context_tampering_is_rejected_at_decision_boundary():
     raw["context_id"] = "f" * 64
     with pytest.raises(ReportSchemaError, match="planning_context"):
         parse_decision_report(raw)
+
+
+def test_decision_round_trip_keeps_availability_snapshot_reference():
+    raw = _decision().to_dict()
+    raw["player_availability_snapshot_reference"] = {
+        "path": "data/processed/player_availability_snapshots/run/availability.json",
+        "sha256": "d" * 64,
+    }
+    parsed = parse_decision_report(raw)
+    assert parsed.player_availability_snapshot is not None
+    assert parsed.player_availability_snapshot.path.endswith("availability.json")
+    assert parsed.to_dict()["player_availability_snapshot_reference"]["sha256"] == "d" * 64
+
+
+def test_decision_round_trip_keeps_minutes_history_snapshot_reference():
+    raw = _decision().to_dict()
+    raw["player_minutes_history_snapshot_reference"] = {
+        "path": "data/processed/player_minutes_history_snapshots/run/history.json",
+        "sha256": "e" * 64,
+    }
+    parsed = parse_decision_report(raw)
+    assert parsed.player_minutes_history_snapshot is not None
+    assert parsed.player_minutes_history_snapshot.path.endswith("history.json")
+    assert parsed.to_dict()["player_minutes_history_snapshot_reference"]["sha256"] == "e" * 64

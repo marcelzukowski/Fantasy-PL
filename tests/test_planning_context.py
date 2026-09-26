@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from desktop_app.chip_runner import DesktopChipError, _validate_decision
+from desktop_app.decision_runner import _deadline_capture_status
 from desktop_app.decision_orchestration import DesktopEngineError, planning_context_for_state, validate_decision_bundle
 from desktop_app.state import DesktopSquadState, default_chip_state, planning_state_changed
 from desktop_app.run_center import RunCenterError, discover_analysis_runs, write_analysis_run
@@ -207,3 +208,65 @@ def test_analysis_manifest_cross_checks_decision_and_chip_context_ids(tmp_path):
             recommended_xi_available=True, captaincy_available=True,
         )
 
+
+
+def test_verified_official_deadline_propagates_to_context_changes_identity_and_tampering_fails(tmp_path):
+    bundle_path, bundle, manifest, prediction_context = _run(tmp_path)
+    run = bundle_path.parent
+    prediction_context.pop("deadline")
+    prediction_context.update({
+        "planning_gameweek": 6,
+        "official_deadline": "2026-09-11T17:00:00+00:00",
+        "deadline_source": "official_fpl_api.bootstrap_static.local_snapshot",
+        "deadline_verification_status": "VERIFIED",
+        "deadline_observed_at": "2026-09-10T09:00:00+00:00",
+    })
+    context_path = run / "prediction_context.json"
+    context_path.write_text(json.dumps(prediction_context, sort_keys=True), encoding="utf-8")
+    manifest["artifacts"]["prediction_context"]["sha256"] = _sha(context_path)
+    (run / "run_manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    state = _state()
+    verified = build_planning_context(
+        state=state, bundle_path=bundle_path, bundle=bundle,
+        manifest=manifest, prediction_context=prediction_context,
+    )
+    assert verified.deadline == "2026-09-11T17:00:00+00:00"
+    assert _deadline_capture_status(verified.deadline, observed_at=AT)[0] == "ELIGIBLE"
+
+    changed_context = dict(prediction_context)
+    changed_context["official_deadline"] = "2026-09-12T17:00:00+00:00"
+    context_path.write_text(json.dumps(changed_context, sort_keys=True), encoding="utf-8")
+    manifest["artifacts"]["prediction_context"]["sha256"] = _sha(context_path)
+    (run / "run_manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    changed = build_planning_context(
+        state=state, bundle_path=bundle_path, bundle=bundle,
+        manifest=manifest, prediction_context=changed_context,
+    )
+    assert changed.context_id != verified.context_id
+
+    context_path.write_text(json.dumps({**changed_context, "official_deadline": "2026-09-13T17:00:00+00:00"}), encoding="utf-8")
+    with pytest.raises(ProjectionArtifactIntegrityError, match="prediction_context hash mismatch"):
+        build_planning_context(
+            state=state, bundle_path=bundle_path, bundle=bundle,
+            manifest=manifest, prediction_context=changed_context,
+        )
+
+
+def test_unverified_context_keeps_deadline_empty_and_p2_gate_skips(tmp_path):
+    bundle_path, bundle, manifest, prediction_context = _run(tmp_path)
+    prediction_context.pop("deadline")
+    prediction_context.update({
+        "planning_gameweek": 6,
+        "official_deadline": "2026-09-11T17:00:00+00:00",
+        "deadline_verification_status": "UNVERIFIED",
+    })
+    path = bundle_path.parent / "prediction_context.json"
+    path.write_text(json.dumps(prediction_context), encoding="utf-8")
+    manifest["artifacts"]["prediction_context"]["sha256"] = _sha(path)
+    (bundle_path.parent / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    context = build_planning_context(
+        state=_state(), bundle_path=bundle_path, bundle=bundle,
+        manifest=manifest, prediction_context=prediction_context,
+    )
+    assert context.deadline is None
+    assert _deadline_capture_status(context.deadline, observed_at=AT)[0] == "SKIPPED_UNVERIFIED_DEADLINE"

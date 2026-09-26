@@ -136,3 +136,17 @@ def test_chip_forecast_optional_coverage_is_visible_without_affecting_core_statu
     assert model.status is AnalysisTrustStatus.VERIFIED
     assert model.chip_forecast_status == "PARTIAL"
     assert "Chip forecast: PARTIAL" in model.optional_notes
+
+
+def test_availability_advisory_status_is_visible_without_changing_verified_core():
+    model = _verified(availability_status="PARTIAL")
+    assert model.status is AnalysisTrustStatus.VERIFIED
+    assert model.availability_status == "PARTIAL"
+    assert "Availability risk: PARTIAL" in model.optional_notes
+
+
+def test_deadline_skipped_minutes_history_is_visible_without_invalidating_core():
+    model = _verified(minutes_history_status="SKIPPED_AFTER_DEADLINE")
+    assert model.status is AnalysisTrustStatus.VERIFIED
+    assert model.minutes_history_status == "SKIPPED_AFTER_DEADLINE"
+    assert "Recent minutes: SKIPPED_AFTER_DEADLINE" in model.optional_notes

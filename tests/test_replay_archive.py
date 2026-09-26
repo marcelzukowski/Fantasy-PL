@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fpl_engine.planning.context import PLANNING_CONTEXT_SCHEMA, PlanningContext, REQUIRED_ARTIFACTS
 from fpl_engine.planning import ChipForecastStatus, ChipOpportunityForecast, write_chip_opportunity_forecast
-from fpl_engine.reports import AnalysisManifestV2, DecisionReportV2, ReportReference
+from fpl_engine.reports import AnalysisManifestV2, DecisionReportV2, ReportReference, parse_analysis_manifest, parse_decision_report
 from fpl_engine.validation.replay_archive import (
  ArchiveConflictError, ArchiveStatus, ReplayArchiveError, archive_analysis, archive_status,
  attach_outcome, build_archive_case, discover_archives, select_operational_archive, validate_archive_case,
@@ -77,3 +77,26 @@ def test_archive_preserves_exact_chip_forecast_reference(tmp_path):
  assert case.chip_opportunity_forecast.status.value == "AVAILABLE"
  target=write_archive_case(root,case)
  assert validate_archive_case(root,target).checks["chip_opportunity_forecast"]
+
+
+def test_archive_preserves_availability_snapshot_reference(tmp_path):
+ root,analysis_path,decision_path,*_= _root(tmp_path)
+ from fpl_engine.planning.player_availability_risk import (
+  PLAYER_AVAILABILITY_RISK_METHOD_V1, PLAYER_AVAILABILITY_SNAPSHOT_SCHEMA_V1,
+  PlayerAvailabilitySnapshot, write_player_availability_snapshot,
+ )
+ decision=parse_decision_report(json.loads(decision_path.read_text(encoding="utf-8")))
+ snapshot=PlayerAvailabilitySnapshot(
+  PLAYER_AVAILABILITY_SNAPSHOT_SCHEMA_V1,decision.context_id,AT.isoformat(),6,
+  PLAYER_AVAILABILITY_RISK_METHOD_V1,(),{"status":"AVAILABLE","players_evaluated":0},
+  {"prediction_timestamp":AT.isoformat(),"observed_at":AT.isoformat(),"source":"official_fpl","production_influence":False},(),{"cache_hits":0},
+ )
+ snapshot_path=write_player_availability_snapshot(root,snapshot)
+ updated=replace(decision,player_availability_snapshot=ReportReference(str(snapshot_path.relative_to(root)),sha256(snapshot_path.read_bytes()).hexdigest()))
+ decision_path.write_text(json.dumps(updated.to_dict(),sort_keys=True),encoding="utf-8")
+ analysis=parse_analysis_manifest(json.loads(analysis_path.read_text(encoding="utf-8")))
+ updated_analysis=replace(analysis,decision_report=ReportReference(str(decision_path.relative_to(root)),sha256(decision_path.read_bytes()).hexdigest()))
+ analysis_path.write_text(json.dumps(updated_analysis.to_dict(),sort_keys=True),encoding="utf-8")
+ case=build_archive_case(root,analysis_path)
+ assert case.player_availability_snapshot.status.value == "AVAILABLE"
+ assert case.player_availability_snapshot.path == str(snapshot_path.relative_to(root))

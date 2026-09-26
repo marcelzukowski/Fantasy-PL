@@ -6,6 +6,9 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
+import fpl_engine.current as current_module
+from desktop_app.gameweek_deadlines import ValidatedOfficialDeadline
+
 
 @pytest.fixture(autouse=True)
 def _legacy_synthetic_roster_simulator_policy(
@@ -402,3 +405,38 @@ def test_current_pipeline_persists_market_shadow_without_changing_production_ev(
         market_metadata["providers"]
         == ["the_odds_api"]
     )
+
+
+def test_prediction_context_persists_only_a_verified_official_deadline_and_final_bytes(monkeypatch, tmp_path):
+    bootstrap = _source().refresh(_context()).bootstrap
+    deadline = ValidatedOfficialDeadline(
+        season="2026/27", gameweek=5,
+        deadline=datetime(2026, 9, 12, 17, tzinfo=timezone.utc),
+        source="official_fpl_api.bootstrap_static.local_snapshot",
+        observed_at=AT - timedelta(minutes=2), raw_snapshot_id="raw-bootstrap",
+        source_url="https://fantasy.premierleague.com/api/bootstrap-static/",
+    )
+    monkeypatch.setattr(current_module, "load_validated_official_deadline", lambda *args, **kwargs: deadline)
+    payload = current_module._prediction_context_payload(
+        _context(), project_root=tmp_path, bootstrap=bootstrap,
+    )
+    path = tmp_path / "prediction_context.json"
+    current_module._write_json(path, payload)
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["official_deadline"] == "2026-09-12T17:00:00+00:00"
+    assert persisted["planning_gameweek"] == 5
+    assert persisted["deadline_verification_status"] == "VERIFIED"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
+
+
+def test_prediction_context_keeps_missing_local_deadline_unverified(monkeypatch, tmp_path):
+    bootstrap = _source().refresh(_context()).bootstrap
+    monkeypatch.setattr(current_module, "load_validated_official_deadline", lambda *args, **kwargs: None)
+    payload = current_module._prediction_context_payload(
+        _context(), project_root=tmp_path, bootstrap=bootstrap,
+    )
+    assert payload["planning_gameweek"] == 5
+    assert payload["deadline_verification_status"] == "UNVERIFIED"
+    assert "official_deadline" not in payload

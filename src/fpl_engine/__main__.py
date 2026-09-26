@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 import sys
@@ -27,6 +28,8 @@ from .current_market_shadow import (
 )
 from .shadow import ShadowRunError, run_shadow
 from .types import PredictionContext
+from .planning import OfficialPlayerHistoryAcquirer, write_official_player_history_acquisition
+from .reports import parse_decision_report
 
 
 def _timestamp(value: str) -> datetime:
@@ -63,6 +66,14 @@ def main() -> int:
     current.add_argument("--api-football-league-id", type=int)
     current.add_argument("--api-football-budget", type=int, default=80)
     current.add_argument("--skip-market-shadow", action="store_true")
+    history = commands.add_parser("refresh-player-history", help="explicitly acquire advisory Official FPL completed player history")
+    history.add_argument("--season", required=True)
+    history.add_argument("--gameweek", type=int, required=True)
+    history.add_argument("--squad-state", type=Path, required=True)
+    history.add_argument("--prediction-bundle", type=Path, required=True)
+    history.add_argument("--decision-report", type=Path)
+    history.add_argument("--top-targets", type=int, default=10)
+    history.add_argument("--cache-ttl-seconds", type=int, default=300)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     if args.command == "shadow":
@@ -76,6 +87,28 @@ def main() -> int:
             parser.error(str(exc))
         print(machine)
         print(human)
+    elif args.command == "refresh-player-history":
+        if args.cache_ttl_seconds < 0 or args.top_targets < 0:
+            parser.error("history cache TTL and top-target count must be non-negative")
+        try:
+            state_payload = json.loads(args.squad_state.read_text(encoding="utf-8"))
+            if not isinstance(state_payload, dict) or not isinstance(state_payload.get("player_ids"), list):
+                raise ValueError("squad state must provide player_ids")
+            decision = parse_decision_report(json.loads(args.decision_report.read_text(encoding="utf-8"))) if args.decision_report else None
+            retrieval_clock = lambda: datetime.now(timezone.utc)
+            raw_store = RawStore(root / "data" / "raw")
+            cache = HttpCache(root / "data" / "interim" / "http_cache", clock=retrieval_clock)
+            with httpx.Client() as client:
+                adapter = OfficialFPLAdapter(client=client, cache=cache, raw_store=raw_store, ttl=timedelta(seconds=args.cache_ttl_seconds), clock=retrieval_clock)
+                acquisition = OfficialPlayerHistoryAcquirer(adapter=adapter, raw_store=raw_store, cache_ttl=timedelta(seconds=args.cache_ttl_seconds), clock=retrieval_clock).refresh(
+                    bundle_directory=args.prediction_bundle.parent, season=args.season, gameweek=args.gameweek,
+                    squad_player_ids=tuple(str(value) for value in state_payload["player_ids"]), decision=decision, top_targets=args.top_targets,
+                )
+            artifact = write_official_player_history_acquisition(args.prediction_bundle.parent, acquisition)
+            print(artifact)
+            print(json.dumps(acquisition.statistics, sort_keys=True), file=sys.stderr)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            parser.error(str(exc))
     elif args.command == "predict-current":
         if args.team_id is not None:
             parser.error(str(team_id_squad_ingestion_limitation(args.team_id)))

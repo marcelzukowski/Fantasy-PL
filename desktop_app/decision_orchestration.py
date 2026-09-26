@@ -193,13 +193,17 @@ def write_decision_request(path: Path, state: DesktopSquadState) -> Path:
     return path
 
 
-def decision_arguments(*, request_path: Path, prediction_bundle: Path, output_dir: Path) -> list[str]:
-    return [
+def decision_arguments(*, request_path: Path, prediction_bundle: Path, output_dir: Path,
+                       capture_advisory_history: bool = False) -> list[str]:
+    arguments = [
         "-m", "desktop_app.decision_runner",
         "--desktop-state", str(request_path),
         "--prediction-bundle", str(prediction_bundle),
         "--output-dir", str(output_dir),
     ]
+    if capture_advisory_history:
+        arguments.append("--capture-advisory-history")
+    return arguments
 
 
 def decision_report_path(output: str) -> Path | None:

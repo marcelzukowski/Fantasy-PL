@@ -1,4 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 
 
 a = Analysis(
@@ -21,6 +21,7 @@ a = Analysis(
     ],
     hiddenimports=[
         'qt_material6',
+        'fpl_engine.planning.player_availability_risk',
     ],
     hookspath=[],
     hooksconfig={},
