@@ -22,6 +22,9 @@ a = Analysis(
     hiddenimports=[
         'qt_material6',
         'fpl_engine.planning.player_availability_risk',
+        # Loaded through fpl_engine.planning.__getattr__ while the GUI renders
+        # advisory Player Risk data after a Decision worker finishes.
+        'fpl_engine.planning.player_minutes_history',
     ],
     hookspath=[],
     hooksconfig={},

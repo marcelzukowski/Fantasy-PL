@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+from time import perf_counter
 import tempfile
 
 from fpl_engine.optimizer import OptimizerError, SquadState, validate_squad
@@ -388,7 +389,7 @@ def _advisory_snapshots(*, project_root: Path, prediction_bundle_path: Path,
                 with httpx.Client() as client:
                     adapter = OfficialFPLAdapter(
                         client=client, cache=cache, raw_store=raw_store,
-                        clock=lambda: now,
+                        ttl=timedelta(minutes=5), clock=lambda: now,
                     )
                     acquisition = OfficialPlayerHistoryAcquirer(
                         adapter=adapter, raw_store=raw_store, clock=lambda: now,
@@ -469,6 +470,13 @@ def _advisory_snapshots(*, project_root: Path, prediction_bundle_path: Path,
 
 def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Path, output_dir: Path,
                          project_root: Path, capture_advisory_history: bool = False) -> Path:
+    timing_started = perf_counter()
+    timings: dict[str, float | None] = {key: None for key in (
+        "decision_input", "greedy", "v1", "v2", "v3_unrestricted", "v3_forced_hold",
+        "v3_total", "previews", "captaincy", "top_targets", "chip_opportunity_forecast",
+        "advisory_history", "report_serialization", "decision_total",
+    )}
+    input_started = perf_counter()
     desktop = _object(desktop_state_path, "desktop squad state")
     bundle = validate_decision_bundle(
         project_root,
@@ -503,12 +511,18 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
             )
         except (ShadowRunError, DecisionInputError) as exc:
             raise DesktopDecisionError("Decision output cannot build a shared validated engine input.") from exc
+        timings["decision_input"] = perf_counter() - input_started
+        shadow_started = perf_counter()
         try:
             machine, _ = run_shadow(source, project_root=project_root, output_dir=output_dir,
                                     prediction_bundle_path=prediction_bundle_path, decision_input=decision_input)
         except ShadowRunError as exc:
             raise DesktopDecisionError(str(exc)) from exc
     report = _object(machine, "shadow decision report")
+    optimizer_timings = report.get("legacy_optimizer_diagnostics", {}).get("timings", {})
+    for key in ("greedy", "v1", "v2"):
+        value = optimizer_timings.get(key)
+        timings[key] = float(value) if isinstance(value, (int, float)) else None
     recommendation = report.get("recommendations", {}).get("greedy_1gw")
     if not isinstance(recommendation, dict):
         raise DesktopDecisionError("The decision engine did not return its Greedy 1GW recommendation.")
@@ -527,6 +541,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
     created_at = datetime.now(timezone.utc)
     chip_forecast_reference = None
     chip_forecast = None
+    forecast_started = perf_counter()
     try:
         chip_forecast = build_chip_opportunity_forecast(decision_input, generated_at=created_at)
         forecast_path = write_chip_opportunity_forecast(project_root, chip_forecast)
@@ -538,8 +553,10 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
     except (ChipOpportunityForecastError, OSError):
         # An advisory artifact must never invalidate a verified decision.
         chip_forecast = None
+    timings["chip_opportunity_forecast"] = perf_counter() - forecast_started
     strategic_v3 = None
     strategic_v3_error = None
+    v3_started = perf_counter()
     try:
         with decision_input.policy_timer("strategic_v3"):
             strategic_v3 = StrategicPlannerV3(decision_input.rules).plan(
@@ -552,6 +569,8 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
     except (StrategicPlannerV3Error, DesktopDecisionError, OptimizerError) as exc:
         strategic_v3_error = str(exc)
         strategy_unavailable["strategic"] = f"V3 unavailable: {exc}"
+    timings["v3_total"] = perf_counter() - v3_started
+    previews_started = perf_counter()
     for display_plan in horizon_transfer_plans(horizon_report):
         key = _strategy_key(display_plan.title)
         if not key:
@@ -568,6 +587,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         except DesktopDecisionError as exc:
             strategy_unavailable[key] = str(exc)
 
+    timings["previews"] = perf_counter() - previews_started
     # Policies, captaincy and all previews are now frozen. This optional
     # collection is deliberately after V1/V2/V3 and before final report
     # serialization, so it cannot rerun or influence recommendation logic.
@@ -578,6 +598,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         feasible_plans=feasible_plans, strategic_v3=strategic_v3,
         strategy_previews=strategy_previews,
     )
+    advisory_started = perf_counter()
     try:
         decision_input, availability_snapshot_reference, minutes_history_snapshot_reference = _advisory_snapshots(
             project_root=project_root, prediction_bundle_path=prediction_bundle_path,
@@ -589,6 +610,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
         # Advice is optional: keep every already-frozen policy result intact.
         availability_snapshot_reference = None
         minutes_history_snapshot_reference = None
+    timings["advisory_history"] = perf_counter() - advisory_started
     result = {
         "report_version": 4, "mode": report.get("mode"), "external_mutations": report.get("external_mutations", []), "context_id": planning_context.context_id, "planning_context": planning_context.to_dict(),
         "shadow_report": str(machine), "recommendation": recommendation,
@@ -611,6 +633,7 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
     # Report time is finalization time, after optional advisory acquisition.
     report_created_at = datetime.now(timezone.utc)
     destination = output_dir / f"desktop-decision-{report_created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    serialization_started = perf_counter()
     try:
         typed_report = DecisionReportV2.create(
             report_id=destination.stem,
@@ -635,6 +658,14 @@ def run_desktop_decision(*, desktop_state_path: Path, prediction_bundle_path: Pa
     except ReportSchemaError as exc:
         raise DesktopDecisionError(f"Decision report schema validation failed: {exc}") from exc
     destination.write_text(json.dumps(typed_report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    timings["report_serialization"] = perf_counter() - serialization_started
+    timings["decision_total"] = perf_counter() - timing_started
+    print("DECISION_TIMING=" + json.dumps(timings, sort_keys=True), flush=True)
+    print("DECISION_DIAGNOSTIC=" + json.dumps({
+        "v1": report.get("legacy_optimizer_diagnostics", {}).get("optimizer_v1"),
+        "v2": report.get("legacy_optimizer_diagnostics", {}).get("optimizer_v2"),
+        "v3": decision_input.diagnostics.snapshot(),
+    }, sort_keys=True), flush=True)
     return destination
 
 

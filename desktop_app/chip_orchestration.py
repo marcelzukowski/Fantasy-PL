@@ -20,13 +20,14 @@ class ChipRunState(str, Enum):
     ERROR = "ERROR"
 
 
-def chip_arguments(*, request_path: Path, prediction_bundle: Path, decision_report: Path, output_dir: Path) -> list[str]:
+def chip_arguments(*, request_path: Path, prediction_bundle: Path, decision_report: Path, output_dir: Path, cancel_file: Path | None = None) -> list[str]:
     return [
         "-m", "desktop_app.chip_runner",
         "--desktop-state", str(request_path),
         "--prediction-bundle", str(prediction_bundle),
         "--decision-report", str(decision_report),
         "--output-dir", str(output_dir),
+        *( ["--cancel-file", str(cancel_file)] if cancel_file is not None else [] ),
     ]
 
 

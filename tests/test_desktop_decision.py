@@ -627,3 +627,11 @@ def test_final_advisory_set_uses_only_frozen_outputs_and_deduplicates():
         strategy_previews={"short_term": {"starting_xi": ["owned"], "bench_order": [], "captain": "owned", "vice_captain": "incoming"}},
     )
     assert ids == ("future", "incoming", "owned", "top")
+
+
+def test_advisory_history_adapter_supplies_required_ttl():
+    import inspect
+    import desktop_app.decision_runner as decision_runner
+
+    source = inspect.getsource(decision_runner._advisory_snapshots)
+    assert "ttl=timedelta(minutes=5)" in source

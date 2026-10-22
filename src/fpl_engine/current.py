@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
 import json
+from time import perf_counter
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
@@ -1325,6 +1326,8 @@ class CurrentPredictionPipeline:
         materialized_source: CurrentSourceData | None = None,
         market_quotes: tuple[MarketQuote, ...] = (),
     ) -> CurrentRunResult:
+        timing_started = perf_counter()
+        stage_timings: dict[str, float] = {}
         at = _utc(context.prediction_timestamp, "prediction_timestamp")
         season = context.target_season
         if season is None:
@@ -1378,6 +1381,7 @@ class CurrentPredictionPipeline:
             minutes_calibration_path.read_bytes()
         ).hexdigest()
 
+        input_started = perf_counter()
         self.progress("provider ingestion")
         source = materialized_source if materialized_source is not None else self.source.refresh(context)
         records = (source.bootstrap, source.fixtures, *source.event_live, *source.optional)
@@ -1410,6 +1414,9 @@ class CurrentPredictionPipeline:
         if not isinstance(elements, list) or not isinstance(teams, list):
             raise CurrentSourceError("Official FPL bootstrap lacks players or teams")
 
+        stage_timings["input_load"] = perf_counter() - input_started
+        self.progress(f"PREDICT_TIMING input_load={stage_timings['input_load']:.6f}")
+        preparation_started = perf_counter()
         run_dir = self.config.output_root / season.replace("/", "-") / at.strftime("%Y%m%dT%H%M%SZ")
         run_dir.mkdir(parents=True, exist_ok=True)
         self.config.canonical_database.parent.mkdir(parents=True, exist_ok=True)
@@ -1623,6 +1630,9 @@ class CurrentPredictionPipeline:
                 ) for player in players
             }
 
+            stage_timings["preparation"] = perf_counter() - preparation_started
+            self.progress(f"PREDICT_TIMING preparation={stage_timings['preparation']:.6f}")
+            simulation_started = perf_counter()
             strengths = []
             minutes_outputs = []
             tactical_outputs = []
@@ -1692,6 +1702,9 @@ class CurrentPredictionPipeline:
                     fixture.kickoff, fixture.known_at, simulation,
                 ))
 
+            stage_timings["simulation_total"] = perf_counter() - simulation_started
+            self.progress(f"PREDICT_TIMING simulation_total={stage_timings['simulation_total']:.6f} fixtures={len(horizon)} players={len(players)} simulations_per_fixture={self.config.simulations_per_fixture}")
+            aggregation_started = perf_counter()
             market_shadow_report = None
 
             if market_quotes:
@@ -1721,6 +1734,9 @@ class CurrentPredictionPipeline:
                 ) for player in players
             ), key=lambda row: row.player_id))
 
+            stage_timings["aggregation"] = perf_counter() - aggregation_started
+            self.progress(f"PREDICT_TIMING aggregation={stage_timings['aggregation']:.6f}")
+            serialization_started = perf_counter()
             self.progress("projection persistence")
             store = ProjectionStore(run_dir / "projections.duckdb")
             try:
@@ -2089,6 +2105,10 @@ class CurrentPredictionPipeline:
             }
             _write_json(manifest_path, manifest)
             artifacts["run_manifest"] = manifest_path
+            stage_timings["serialization"] = perf_counter() - serialization_started
+            stage_timings["total"] = perf_counter() - timing_started
+            self.progress(f"PREDICT_TIMING serialization={stage_timings['serialization']:.6f}")
+            self.progress(f"PREDICT_TIMING total={stage_timings['total']:.6f}")
             self.progress(f"projections completed {len(projections)}")
             return CurrentRunResult(
                 run_dir, tuple(projections), candidate_pool, horizon,

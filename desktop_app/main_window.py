@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from hashlib import sha256
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDockWidget, QFrame, QGridLayout,
@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         self.full_analysis_state = FullAnalysisState.IDLE
         self._full_analysis_bundle: Path | None = None
         self._chip_cancel_requested = False
+        self._chip_cancel_file: Path | None = None
         self.account_process: QProcess | None = None
         self.latest_projection_run: Path | None = None
         self._current_state: DesktopSquadState | None = None
@@ -909,7 +910,15 @@ class MainWindow(QMainWindow):
         self.cancel_chip_button.setEnabled(False)
         self.analysis_chip_summary.setText("Chip analysis cancellation requested. Transfer and Recommended XI remain available.")
         self._append_engine_log("CHIP SCREEN: cancellation requested by user.")
-        self.chip_process.terminate()
+        if self._chip_cancel_file is not None:
+            self._chip_cancel_file.parent.mkdir(parents=True, exist_ok=True)
+            self._chip_cancel_file.write_text("cancelled\n", encoding="utf-8")
+        QTimer.singleShot(5000, self._force_cancel_chip_worker)
+
+    def _force_cancel_chip_worker(self) -> None:
+        if self._chip_cancel_requested and self.chip_process is not None and self.chip_process.state() != QProcess.ProcessState.NotRunning:
+            self._append_engine_log("CHIP SCREEN: worker cancellation grace period expired.")
+            self.chip_process.terminate()
 
     def retry_chip_run(self) -> None:
         if self.latest_decision_report is None:
@@ -1576,9 +1585,12 @@ class MainWindow(QMainWindow):
                 raise DesktopEngineError("Select a compatible production projection run before continuing.")
             bundle = chip_bundle_for_state(self.root, state, self.selected_projection_bundle)
             request = write_decision_request(self.root / "data" / "interim" / "desktop_chip" / "request.json", state)
+            self._chip_cancel_file = self.root / "data" / "interim" / "desktop_chip" / "cancel.request"
+            self._chip_cancel_file.unlink(missing_ok=True)
             arguments = chip_arguments(
                 request_path=request, prediction_bundle=bundle, decision_report=self.latest_decision_report,
                 output_dir=self.root / "data" / "processed" / "desktop_chips" / state.season.replace("/", "-"),
+                cancel_file=self._chip_cancel_file,
             )
         except (DesktopStateError, DesktopEngineError) as exc:
             self._append_engine_log(f"CHIP SCREEN: {exc}")

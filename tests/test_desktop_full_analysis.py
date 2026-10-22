@@ -122,7 +122,7 @@ def test_cancel_requests_only_child_chip_process(qapp):
         window.chip_process = process
         window.analysis_transfer_summary.setText("Decision remains available")
         window.cancel_chip_run()
-        assert process.terminated
+        assert not process.terminated
         assert window._chip_cancel_requested
         assert window.analysis_transfer_summary.text() == "Decision remains available"
     finally:

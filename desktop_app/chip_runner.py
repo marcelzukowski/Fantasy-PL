@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import os
+import queue
+import threading
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 from hashlib import sha256
 from math import prod
+from time import perf_counter
 from pathlib import Path
 import subprocess
 import tempfile
@@ -25,6 +29,7 @@ from fpl_engine.optimizer import chip_available
 from fpl_engine.optimizer.v2 import OptimizerV2Config, generate_candidates
 from fpl_engine.reports import DecisionReportV2, ChipReportV2, ReportSchemaError, parse_decision_report
 from fpl_engine.shadow import ShadowRunError, load_squad_state
+from fpl_engine.planning import ProjectionArtifactIntegrityError, verify_projection_artifacts
 
 from .decision_orchestration import planning_context_for_state
 from .decision_runner import DesktopDecisionError, _object, shadow_input
@@ -32,6 +37,36 @@ from .decision_runner import DesktopDecisionError, _object, shadow_input
 
 class DesktopChipError(ValueError):
     pass
+
+
+class DesktopChipCancelled(DesktopChipError):
+    """The existing desktop cancellation request stopped this worker."""
+
+
+def _cancelled(cancel_requested) -> bool:
+    return bool(cancel_requested is not None and cancel_requested())
+
+
+def _terminate_owned_child(child) -> None:
+    """Terminate and reap the strategic child, including its Windows tree."""
+    if child.poll() is not None:
+        return
+    child.terminate()
+    try:
+        child.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        child.kill()
+    try:
+        child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait()
 
 
 CHIPS = ("wildcard", "free_hit", "bench_boost", "triple_captain")
@@ -60,6 +95,35 @@ def _load_strategy_context(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _verified_bundle_identity(bundle: Path) -> dict | None:
+    """Use the production manifest/artifact contract as the cache identity."""
+    try:
+        bundle = Path(bundle).resolve()
+        manifest_path = bundle.parent / "run_manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            return None
+        integrity = verify_projection_artifacts(bundle, manifest, require_hashes=True)
+        payload = json.loads(bundle.read_text(encoding="utf-8"))
+        if integrity is None or not isinstance(payload, dict):
+            return None
+    except (OSError, UnicodeError, json.JSONDecodeError, ProjectionArtifactIntegrityError):
+        return None
+    pipeline = payload.get("pipeline") if isinstance(payload.get("pipeline"), dict) else {}
+    return {
+        "bundle_sha256": sha256(bundle.read_bytes()).hexdigest(),
+        "manifest_sha256": integrity.manifest_sha256,
+        "artifact_hashes": [list(row) for row in integrity.artifact_hashes],
+        "season": payload.get("season"),
+        "gameweek": payload.get("current_gameweek"),
+        "simulator_version": pipeline.get("simulator_version"),
+        "simulation_mode": pipeline.get("simulation_mode"),
+        "model_version": pipeline.get("model_version"),
+        "rule_version": pipeline.get("rule_version"),
+        "seed": pipeline.get("seed"),
+    }
+
+
 def _strategic_bundle(
     *,
     project_root: Path,
@@ -67,9 +131,12 @@ def _strategic_bundle(
     base_bundle: Path,
     strategic_gameweeks: tuple[int, ...],
     chip_period_end: int,
+    cancel_requested=None,
 ) -> tuple[Path, bool]:
     """Return a cached, model-only 3k future-horizon bundle when possible."""
     root = Path(project_root).resolve()
+    if _cancelled(cancel_requested):
+        raise DesktopChipCancelled("Strategic chip scan cancelled before child start.")
     gameweeks = tuple(int(gameweek) for gameweek in strategic_gameweeks)
     if not gameweeks:
         raise DesktopChipError("Strategic scan has no eligible gameweeks in the active chip period.")
@@ -80,17 +147,23 @@ def _strategic_bundle(
     projection_start = gameweeks[0]
     projection_horizon = len(gameweeks)
     context_path = _strategy_context_path(root, season=state.season, gameweek=state.current_gameweek)
+    base_identity = _verified_bundle_identity(base_bundle)
+    if base_identity is None:
+        raise DesktopChipError("Strategic cache requires a verified base projection bundle.")
     context = _load_strategy_context(context_path)
     if context is not None:
         cached = Path(str(context.get("bundle_path", "")))
+        cached_identity = _verified_bundle_identity(cached) if cached.is_file() else None
         if (
-            context.get("base_bundle") == str(Path(base_bundle).resolve())
+            context.get("base_identity") == base_identity
+            and context.get("strategic_bundle_identity") == cached_identity
             and context.get("simulations_per_fixture") == STRATEGIC_SIMULATIONS_PER_FIXTURE
             and context.get("projection_start_gameweek") == projection_start
             and context.get("projection_gameweeks") == list(gameweeks)
             and context.get("projection_horizon_gameweeks") == projection_horizon
             and context.get("chip_period_end") == int(chip_period_end)
-            and cached.is_file()
+            and context.get("market_shadow") == "DISABLED_MODEL_ONLY"
+            and cached_identity is not None
         ):
             return cached, True
 
@@ -108,16 +181,49 @@ def _strategic_bundle(
         "--canonical-db", str(canonical_db),
         "--skip-market-shadow",
     ]
-    print("CHIP_PROGRESS=strategic model-only projection scan", flush=True)
-    completed = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
-    for line in completed.stderr.splitlines():
-        if line.startswith("[current]"):
-            print(f"CHIP_PROGRESS=strategic {line.removeprefix('[current] ').strip()}", flush=True)
-    if completed.returncode != 0:
-        raise DesktopChipError("Strategic chip scan could not materialize its model-only projection horizon.")
+    print("CHIP_PROGRESS=materializing strategic projections", flush=True)
+    started = perf_counter()
+    child_lines: list[str] = []
+    output: queue.Queue[str] = queue.Queue()
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+    child = subprocess.Popen(
+        command, cwd=root, text=True, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, bufsize=1, creationflags=creationflags,
+    )
+    def read_output() -> None:
+        assert child.stdout is not None
+        for raw_line in child.stdout:
+            output.put(raw_line.rstrip())
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    try:
+        while reader.is_alive() or not output.empty():
+            if _cancelled(cancel_requested):
+                _terminate_owned_child(child)
+                raise DesktopChipCancelled("Strategic chip scan cancelled.")
+            try:
+                line = output.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            child_lines.append(line)
+            if line.startswith("[current]"):
+                print(f"CHIP_STRATEGIC_PROGRESS={line.removeprefix('[current] ').strip()}", flush=True)
+        returncode = child.wait()
+    finally:
+        if child.poll() is None:
+            _terminate_owned_child(child)
+        if child.stdout is not None:
+            child.stdout.close()
+        reader.join(timeout=1)
+    child_seconds = perf_counter() - started
+    print(f"CHIP_PROGRESS=strategic projection child finished in {child_seconds:.2f}s", flush=True)
+    if returncode != 0:
+        tail = " | ".join(line for line in child_lines[-12:] if line)
+        detail = f" (exit {returncode})" + (f": {tail}" if tail else "")
+        raise DesktopChipError("Strategic chip scan could not materialize its model-only projection horizon" + detail)
     run_directories = [
         Path(line.strip())
-        for line in completed.stdout.splitlines()
+        for line in child_lines
         if line.strip() and Path(line.strip()).is_dir()
     ]
     if not run_directories:
@@ -128,7 +234,9 @@ def _strategic_bundle(
     context_path.parent.mkdir(parents=True, exist_ok=True)
     context_path.write_text(json.dumps({
         "base_bundle": str(Path(base_bundle).resolve()),
+        "base_identity": base_identity,
         "bundle_path": str(bundle.resolve()),
+        "strategic_bundle_identity": _verified_bundle_identity(bundle),
         "season": state.season,
         "gameweek": state.current_gameweek,
         "chip_period_end": int(chip_period_end),
@@ -283,7 +391,14 @@ def _exact_projection_rows(projections):
     }
 
 
-def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path: Path, decision_report_path: Path, output_dir: Path, project_root: Path) -> Path:
+def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path: Path, decision_report_path: Path, output_dir: Path, project_root: Path, cancel_requested=None) -> Path:
+    timing_started = perf_counter()
+    timings: dict[str, float | None] = {key: None for key in (
+        "load_data", "candidate_generation", "current_squad_evaluation", "triple_captain",
+        "bench_boost", "free_hit", "strategic_cache_lookup", "strategic_predict_current",
+        "strategic_bundle_load", "strategic_chip_evaluation", "report_serialization", "chip_total",
+    )}
+    load_started = perf_counter()
     print("CHIP_PROGRESS=loading data", flush=True)
     desktop = _object(desktop_state_path, "desktop squad state")
     try:
@@ -330,11 +445,15 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
     # The existing V2 production candidate generator provides the bounded,
     # deterministic universe consumed by the exact unlimited-squad screen.
     # It is not a GUI heuristic and does not alter the decision calculation.
+    timings["load_data"] = perf_counter() - load_started
     print("CHIP_PROGRESS=generating candidates", flush=True)
+    candidate_started = perf_counter()
     generated, candidate_report = generate_candidates(state, pool, projections, OptimizerV2Config())
+    timings["candidate_generation"] = perf_counter() - candidate_started
     screen_pool = {player.player_id: player for player in (*state.players, *generated)}
     positions = {player_id: player.position for player_id, player in screen_pool.items()}
     player_rows = [{"player_id": player.player_id, "position": player.position, "team_id": player.club_id, "current_price": player.current_price} for player in screen_pool.values()]
+    current_started = perf_counter()
     screen = screen_chips_exact(
         player_rows=player_rows, positions=positions, projections_by_id=exact_projections,
         p_appearance_by_gameweek=appearances, current_player_ids=(player.player_id for player in state.players),
@@ -345,6 +464,7 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
         available_chips=available,
         progress=lambda stage: print(f"CHIP_PROGRESS={stage}", flush=True),
     )
+    timings["current_squad_evaluation"] = perf_counter() - current_started
     near_term_future = future_fixed_squad_chip_opportunities_exact(
         squad_player_ids=(player.player_id for player in state.players), positions=positions,
         projections_by_id=exact_projections, p_appearance_by_gameweek=appearances,
@@ -366,16 +486,22 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
         print(f"CHIP_PROGRESS={strategic_error}", flush=True)
     else:
         try:
+            strategic_started = perf_counter()
             strategic_bundle, strategic_reused = _strategic_bundle(
                 project_root=project_root,
                 state=state,
                 base_bundle=prediction_bundle_path,
                 strategic_gameweeks=horizons.strategic_gameweeks,
                 chip_period_end=horizons.chip_period_end,
+                cancel_requested=cancel_requested,
             )
+            timings["strategic_cache_lookup"] = perf_counter() - strategic_started
+            timings["strategic_predict_current"] = 0.0 if strategic_reused else timings["strategic_cache_lookup"]
+            bundle_load_started = perf_counter()
             strategy_state, strategy_pool, strategy_projections, _, _, strategy_rules, _ = _strategy_inputs(
                 payload, strategic_bundle, project_root,
             )
+            timings["strategic_bundle_load"] = perf_counter() - bundle_load_started
             strategy_positions = {
                 player.player_id: player.position
                 for player in (*strategy_pool, *strategy_state.players)
@@ -395,6 +521,7 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
                 horizon=len(horizons.strategic_gameweeks),
             )
             print("CHIP_PROGRESS=strategic opportunity scoring", flush=True)
+            strategic_evaluation_started = perf_counter()
             strategic_scan = strategic_chip_opportunities(
                 player_rows=strategy_rows,
                 positions=strategy_positions,
@@ -408,6 +535,9 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
                 max_players_per_team=int(strategy_rules.value("initial_squad", "maximum_players_per_club")),
                 available_chips=available,
             )
+            timings["strategic_chip_evaluation"] = perf_counter() - strategic_evaluation_started
+        except DesktopChipCancelled:
+            raise
         except DesktopChipError as exc:
             # The exact current decision remains useful when a separate,
             # lower-confidence future scan cannot be materialized.
@@ -502,6 +632,7 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
     output_dir = Path(output_dir); output_dir.mkdir(parents=True, exist_ok=True)
     created_at = datetime.now(timezone.utc)
     destination = output_dir / f"desktop-chip-{created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
+    serialization_started = perf_counter()
     try:
         typed_report = ChipReportV2.create(
             report_id=destination.stem,
@@ -521,6 +652,9 @@ def run_desktop_chip_screen(*, desktop_state_path: Path, prediction_bundle_path:
     except ReportSchemaError as exc:
         raise DesktopChipError(f"Chip report schema validation failed: {exc}") from exc
     destination.write_text(json.dumps(typed_report.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    timings["report_serialization"] = perf_counter() - serialization_started
+    timings["chip_total"] = perf_counter() - timing_started
+    print("CHIP_TIMING=" + json.dumps(timings, sort_keys=True), flush=True)
     return destination
 
 
@@ -530,13 +664,18 @@ def main() -> int:
     parser.add_argument("--prediction-bundle", type=Path, required=True)
     parser.add_argument("--decision-report", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--cancel-file", type=Path)
     args = parser.parse_args()
     try:
         report = run_desktop_chip_screen(
             desktop_state_path=args.desktop_state, prediction_bundle_path=args.prediction_bundle,
             decision_report_path=args.decision_report, output_dir=args.output_dir,
             project_root=Path(__file__).resolve().parents[1],
+            cancel_requested=(lambda: bool(args.cancel_file and args.cancel_file.is_file())),
         )
+    except DesktopChipCancelled:
+        print("CHIP_CANCELLED=true", flush=True)
+        return 2
     except DesktopChipError as exc:
         parser.error(str(exc))
     print(f"CHIP_REPORT={report}")

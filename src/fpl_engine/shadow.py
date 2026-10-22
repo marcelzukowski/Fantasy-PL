@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 from contextlib import nullcontext
+from time import perf_counter
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -282,14 +283,16 @@ def _recommendations(
         # The active rules document predates the V2-specific section.  Its
         # frozen V2 defaults are still a challenger, never the shadow default.
         v2_config = OptimizerV2Config()
-    greedy = production.recommend(state, greedy_rows, pool, max_transfers=1)
-    v1 = production.recommend(state, projections, pool, max_transfers=2)
+    timings: dict[str, float] = {}
+    started = perf_counter(); greedy = production.recommend(state, greedy_rows, pool, max_transfers=1); timings["greedy"] = perf_counter() - started
+    started = perf_counter(); v1 = production.recommend(state, projections, pool, max_transfers=2); timings["v1"] = perf_counter() - started
     v1_diagnostics = production.last_search_diagnostics.snapshot() if production.last_search_diagnostics else None
     v2_engine = OptimizerV2(rules, v2_config, lineup_provider=lineup_provider)
-    v2 = v2_engine.recommend(state, projections, pool, max_transfers=2)
+    started = perf_counter(); v2 = v2_engine.recommend(state, projections, pool, max_transfers=2); timings["v2"] = perf_counter() - started
     return ({"greedy_1gw": greedy, "optimizer_v1": v1, "optimizer_v2": v2}, {
         "optimizer_v1": v1_diagnostics,
         "optimizer_v2": dict(v2_engine.last_search_diagnostics),
+        "timings": timings,
     })
 
 

@@ -142,7 +142,7 @@ Do not attempt to bypass Google anti-automation protections.
 
 Project root on the development machine is normally:
 
-`C:\Users\Marcel\Desktop\fpl-prediction-engine`
+`C:\Users\Marcel\Desktop\Projects\FPL\Fantasy-PL`
 
 Important top-level areas:
 
@@ -1755,3 +1755,24 @@ Completed:
 
 Next:
 - the next real pre-deadline Run new analysis can accumulate valid Official FPL advisory evidence automatically. No EXE build is required until explicitly requested.
+
+
+## 2026-10-22 — RELEASE-PL-RELOCATED-VENV — Current desktop build
+
+Verified:
+- built the current windowed ONEFILE `FPLControlCenter_PL.exe` using the existing spec and repaired project `.venv` (Python 3.12.12, PyInstaller 6.22.3), including current styles, assets and PL icon;
+- dist opened the responsive `FPL Control Center` main window in 8.31 seconds, then closed normally with exit 0; only the ONEFILE child process appeared and no external IPv4 TCP connection was observed;
+- replaced the root executable only after dist acceptance and checking no existing app instance was running; root opened in 4.75 seconds and closed normally with exit 0;
+- root/dist both contain 77,004,824 bytes, SHA-256 `2F3D5DA02F35266EEA6CEBC942E1D89F87BEFDE1BBF998BDC9142F828542568C`;
+- startup path remains local-only; no FPL sync, bookmaker action, projections or analysis was triggered, and before/after checks found no source/spec/data changes;
+- existing uncommitted changes were preserved. No `uv sync`, dependency installation or full test suite was run.
+
+Next:
+- no further release action is required for this build. Build and launch evidence is in `scratch/packaging_20261022/`.
+
+## 2026-10-22 — REPO-LOCAL-ARTIFACTS — Commit preparation
+
+- ignored local `.serena/` settings and generated `data/diagnostics/` benchmark output; existing EXE, build, dist, scratch and account-data exclusions remain in force;
+- retained source changes, regression tests, the packaging spec and release documentation for version control;
+- verified ignore rules, `git diff --check` and 29 focused timing, packaging, cache, cancellation and advisory tests; no full suite or live analysis was run.
+- next: publish the prepared commit when requested; distribute executable artifacts separately from source control.

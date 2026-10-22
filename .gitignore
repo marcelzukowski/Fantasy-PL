@@ -34,6 +34,7 @@ dist/
 
 # Generated, cached, and account-specific data
 data/cache/
+data/diagnostics/
 data/raw/
 data/snapshots/*
 !data/snapshots/.gitkeep
@@ -71,6 +72,7 @@ logs/
 *.key
 
 # IDE and operating-system files
+.serena/
 .vscode/
 .idea/
 *.code-workspace
