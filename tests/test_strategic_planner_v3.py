@@ -7,6 +7,12 @@ import pytest
 from fpl_engine.models.projections import GameweekPlayerProjection, PlayerProjection
 from fpl_engine.optimizer import ChipState, OptimizerRules, SquadPlayer, SquadState
 from fpl_engine.strategy import PriceChangeSignal, StrategicPlannerV3, StrategicPlannerV3Config, StrategicPlannerV3Error
+from fpl_engine.strategy.strategic_planner_v3 import (
+    StrategicAction,
+    StrategicPath,
+    StrategicPathStep,
+    StrategicPlannerV3Result,
+)
 
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
@@ -56,6 +62,76 @@ def test_v3_returns_best_and_forced_hold_paths_in_the_same_metric_space():
     assert result.best_path.terminal_ft_value < result.best_path.projected_3gw_path_points
     assert result.diagnostics["states_expanded"] > 0
     assert result.diagnostics["candidate_actions_evaluated"] <= 8 * 8 * 3 * 2
+
+
+def _stub_path(state, first_action: str, points: float, terminal_ft: float) -> StrategicPath:
+    squad = tuple(sorted(player.player_id for player in state.players))
+
+    def action(name: str) -> StrategicAction:
+        return StrategicAction(name, (), (), 0, 0, state.bank, state.free_transfers, state.free_transfers, squad)
+
+    steps = tuple(
+        StrategicPathStep(
+            state.current_gameweek + index,
+            action(first_action if index == 0 else "HOLD"),
+            points / 3,
+            points / 3,
+            squad[:11],
+            squad[11:],
+            squad[0],
+            squad[1],
+            {},
+        )
+        for index in range(3)
+    )
+    return StrategicPath(steps, points, terminal_ft, points + terminal_ft)
+
+
+@pytest.mark.parametrize(
+    ("transfer_points", "transfer_ft", "hold_points", "hold_ft", "expected_action"),
+    [
+        (144.0, 4.0, 142.0, 5.0, "TRANSFER"),  # A: unrestricted wins.
+        (143.90385, 3.0, 142.42035, 5.0, "HOLD"),  # B/D: GW8 complete objective and higher raw transfer points.
+        (100.0, 2.0, 101.0, 1.0, "HOLD"),  # C: exact tie prefers HOLD.
+        (100.0, 2.0 + 5e-10, 101.0, 1.0, "HOLD"),  # Numerical tie within 1e-9 prefers HOLD.
+        (114.0, 1.0, 108.0, 4.0, "TRANSFER"),  # E: enough football points overcome lower terminal FT value.
+    ],
+)
+def test_v3_selects_between_complete_objectives_and_serializes_the_alternative(
+    monkeypatch, transfer_points, transfer_ft, hold_points, hold_ft, expected_action,
+):
+    rules, state, pool, projections = _inputs()
+    unrestricted = _stub_path(state, "TRANSFER", transfer_points, transfer_ft)
+    forced_hold = _stub_path(state, "HOLD", hold_points, hold_ft)
+    paths = iter((unrestricted, forced_hold))
+    planner = StrategicPlannerV3(rules)
+    monkeypatch.setattr(planner, "_search", lambda *args, **kwargs: next(paths))
+
+    result = planner.plan(state, pool, projections)
+    expected, alternative = (
+        (unrestricted, forced_hold) if expected_action == "TRANSFER" else (forced_hold, unrestricted)
+    )
+    serialized = result.as_dict()
+
+    assert result.best_path is expected
+    assert result.alternative_path is alternative
+    assert serialized["current_action"]["action"] == expected_action
+    assert serialized["path"][0]["action"] == expected_action
+    assert serialized["alternative_path"]["path"][0]["action"] == alternative.steps[0].action.action
+    assert serialized["delta_vs_alternative"] == pytest.approx(expected.total_path_value - alternative.total_path_value)
+    assert result.delta_vs_hold_now == pytest.approx(expected.total_path_value - forced_hold.total_path_value)
+
+
+def test_v3_result_keeps_three_argument_construction_backward_compatible():
+    _, state, _, _ = _inputs()
+    best = _stub_path(state, "TRANSFER", 10.0, 1.0)
+    hold = _stub_path(state, "HOLD", 9.0, 1.0)
+
+    result = StrategicPlannerV3Result(best, hold, {})
+
+    assert result.alternative_path is None
+    assert result.delta_vs_alternative == result.delta_vs_hold_now
+    assert result.as_dict()["alternative_path"]["path"][0]["action"] == "HOLD"
 
 
 def test_v3_rollover_bank_hits_and_legality_propagate_through_steps():

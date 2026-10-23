@@ -1,0 +1,2 @@
+# Install only into .venv-solver; protobuf requirements conflict with .venv.
+ortools==9.15.6755

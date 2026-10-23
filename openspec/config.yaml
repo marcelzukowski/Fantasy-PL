@@ -1,0 +1,50 @@
+schema: spec-driven
+context: |
+  FPL Windows desktop with external scientific workers. Stable production V3 is
+  K<=2, approximate beam40/horizon3, complete path points minus hits plus current
+  terminal FT value; HOLD wins within1e-9. V22 and Decision/Chip integration stay
+  unchanged. Market Shadow production influence=false. K<=5 is experimental NO-GO
+  (required reduced oracle gap8.271); further heuristic research is deferred.
+  Accounts are read-only. Preserve personal prices and immutable report lineage.
+  No projections, expensive Chip Screen, provider refresh or EXE build by default.
+rules:
+  proposal:
+    - State the search universe, non-goals, immutable baseline and authorization boundary.
+  specs:
+    - Distinguish measured results, solver guarantees, approximation and assumptions.
+  design:
+    - Define objective fidelity, integer scaling error, solver status/bound and worker isolation.
+  tasks:
+    - Write oracle/property contract tests before solver implementation.
+    - Keep implementation unchecked until separately authorized and verified.
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+# Example:
+#   context: |
+#     Designs and tasks must cover Windows, macOS, and Linux
+#     Write all artifacts in Spanish
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

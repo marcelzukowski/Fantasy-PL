@@ -13,6 +13,7 @@ import logging
 from .decision_orchestration import validate_decision_bundle
 from .orchestration import DesktopEngineError, projection_run_summary
 from .state import DesktopSquadState
+from .market_shadow_status import resolve_market_shadow
 from fpl_engine.validation.replay_archive import ReplayArchiveError, archive_analysis
 
 LOGGER = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class ProjectionRun:
     simulator_version: str | None
     market_shadow_status: str | None
     market_shadow_coverage: str | None
+    market_shadow_detail: str | None = None
 
     @property
     def label(self) -> str:
@@ -59,7 +61,8 @@ class ProjectionRun:
             coverage = f" · coverage {self.market_shadow_coverage}" if self.market_shadow_coverage else ""
             shadow = f"Shadow: {self.market_shadow_status.lower()}{coverage}"
         seed = "—" if self.seed is None else str(self.seed)
-        return f"Active: {self.label} · seed {seed} · {shadow}"
+        note = f" · {self.market_shadow_detail}" if self.market_shadow_detail else ""
+        return f"Active: {self.label} · seed {seed} · {shadow}{note}"
 
 
 @dataclass(frozen=True)
@@ -157,12 +160,10 @@ def discover_projection_runs(root: Path, *, season: str, gameweek: int) -> tuple
         count = _optional_int(simulation.get("simulations_per_fixture"))
         if count is None:
             continue
-        market = manifest.get("market_shadow")
-        if not isinstance(market, Mapping):
-            market = {}
-        mapped = _optional_int(market.get("mapped_fixture_count"))
-        total = _optional_int(market.get("current_gameweek_fixture_count"))
-        coverage = f"{mapped}/{total}" if mapped is not None and total is not None else None
+        market_status, coverage, market_detail = resolve_market_shadow(
+            root, run_dir, manifest, season=season, gameweek=gameweek,
+            model_timestamp=bundle.get("prediction_timestamp"),
+        )
         found.append(ProjectionRun(
             run_id=run_dir.name,
             run_dir=run_dir,
@@ -173,8 +174,9 @@ def discover_projection_runs(root: Path, *, season: str, gameweek: int) -> tuple
             simulation_count=count,
             seed=_optional_int(simulation.get("base_seed")),
             simulator_version=str(simulation["simulator_version"]) if simulation.get("simulator_version") is not None else None,
-            market_shadow_status=str(market["status"]) if market.get("status") is not None else None,
+            market_shadow_status=market_status,
             market_shadow_coverage=coverage,
+            market_shadow_detail=market_detail,
         ))
     return tuple(sorted(found, key=lambda run: (run.timestamp, run.run_id), reverse=True))
 

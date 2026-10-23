@@ -1,0 +1,22 @@
+{
+  "saved_result_consistency": {
+    "accepted_inconsistent_result": true,
+    "claimed_objective": 247.42034999999998,
+    "reconstructed_objective": 147.42034999999998
+  },
+  "stat_hash_cache": {
+    "same_size_mtime_rewrite_accepted_by_cache": true
+  },
+  "worker_failed_to_start": {
+    "started": false,
+    "error_logged": true,
+    "finished_emitted": false,
+    "state_after_callback": "RUNNING",
+    "chip_state_after_callback": "RUNNING"
+  },
+  "windows_worker_lifetime": {
+    "launcher_and_child_differ": true,
+    "child_survived_launcher_kill": false,
+    "child_exited_by_cleanup_deadline": true
+  }
+}

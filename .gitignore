@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+pytest-tmp/
 .coverage
 .coverage.*
 coverage.xml
@@ -12,11 +13,13 @@ htmlcov/
 .pyre/
 .ruff_cache/
 .hypothesis/
+.cache/pre-commit/
 .tox/
 .nox/
 
 # Local environments and Python packaging output
 .venv/
+.venv-solver/
 venv/
 env/
 ENV/
@@ -63,6 +66,13 @@ logs/
 *.bak
 *.swp
 *.swo
+
+# Local audit execution state; reports and reproducible evidence remain versioned
+docs/audits/**/git-status-*.txt
+docs/audits/**/router*.jsonl
+docs/audits/**/hash-cache-probe.bin
+docs/audits/**/scenario-result-probe.json
+docs/audits/**/hypothesis/
 
 # Secrets and local settings
 .env

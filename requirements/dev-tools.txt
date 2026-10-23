@@ -1,0 +1,4 @@
+# Additive tooling only. Do not use uv sync on the repaired desktop environment.
+hypothesis==6.170.5
+ruff==0.17.1
+pre-commit==4.7.0

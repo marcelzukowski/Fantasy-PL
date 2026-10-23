@@ -1,0 +1,11 @@
+repos:
+  - repo: local
+    hooks:
+      - id: fpl-fast-contracts
+        name: FPL raw lint, format, compile and contract checks
+        entry: .venv/Scripts/python.exe scripts/dev/check.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+        stages: [pre-commit]

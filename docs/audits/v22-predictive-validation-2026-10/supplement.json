@@ -1,0 +1,1470 @@
+{
+  "archive_validation": [
+    {
+      "archive_case_id": "archive_6198dbf794ec0caa2966195e",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_8a068fc18e90c00445da0c5f",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_c0f8a28c11fc499ae0d71e6c",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_be78cedcf8ee2733d27b2fc5",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_15a1ff6f1941ae61620e69bf",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_2667c815a1e759bbe6d98d46",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_3f6eb011eb95dba664f2a939",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_e393a4e1908f45723248c9e8",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    },
+    {
+      "archive_case_id": "archive_fe794fd3d3aee6e7c076003d",
+      "status": "PRE_DEADLINE_COMPLETE",
+      "checks": {
+        "schema": true,
+        "context_fingerprint": true,
+        "analysis_hash": true,
+        "analysis_schema": true,
+        "decision_hash": true,
+        "decision_schema": true,
+        "report_context_compatibility": true,
+        "deadline_pit": true,
+        "projection_artifacts": true,
+        "market_shadow": true,
+        "price_signals": true,
+        "chip_opportunity_forecast": true,
+        "player_availability_snapshot": true,
+        "player_minutes_history_snapshot": true
+      },
+      "reasons": []
+    }
+  ],
+  "unique_players": 667,
+  "zero_actual_rows": 715,
+  "fixture_counts": {
+    "1": 1334
+  },
+  "minutes_by_gw": {
+    "6": {
+      "n": 667,
+      "mae": 14.89195532233883,
+      "rmse": 22.319585235184526,
+      "bias": -0.8056418290854573
+    },
+    "7": {
+      "n": 667,
+      "mae": 14.445599850074963,
+      "rmse": 22.079689157232092,
+      "bias": -0.09247871064467757
+    }
+  },
+  "minutes_strata": {
+    "0-1": {
+      "points": {
+        "n": 359,
+        "mae": 0.06406685236768803,
+        "rmse": 0.5144161306099906,
+        "bias": -0.06406685236768803
+      },
+      "minutes": {
+        "n": 359,
+        "mae": 0.947075208913649,
+        "rmse": 6.30956297680095,
+        "bias": -0.947075208913649
+      },
+      "mean_predicted_minutes": 0.0,
+      "mean_actual_minutes": 0.947075208913649
+    },
+    "1-30": {
+      "points": {
+        "n": 462,
+        "mae": 0.7500415584415584,
+        "rmse": 1.6249325612579628,
+        "bias": -0.05032294372294372
+      },
+      "minutes": {
+        "n": 462,
+        "mae": 15.87928409090909,
+        "rmse": 22.06126845827033,
+        "bias": 2.551196212121212
+      },
+      "mean_predicted_minutes": 13.494919155844157,
+      "mean_actual_minutes": 10.943722943722944
+    },
+    "30-60": {
+      "points": {
+        "n": 198,
+        "mae": 1.8980555555555556,
+        "rmse": 2.7020987759611055,
+        "bias": -0.44862727272727276
+      },
+      "minutes": {
+        "n": 198,
+        "mae": 31.070870707070707,
+        "rmse": 34.23263415510406,
+        "bias": -1.3218146464646463
+      },
+      "mean_predicted_minutes": 45.81959949494949,
+      "mean_actual_minutes": 47.14141414141414
+    },
+    "60-80": {
+      "points": {
+        "n": 273,
+        "mae": 2.3409694139194137,
+        "rmse": 3.1273558491344384,
+        "bias": -0.24460457875457867
+      },
+      "minutes": {
+        "n": 273,
+        "mae": 19.653519597069597,
+        "rmse": 25.88435274313843,
+        "bias": -3.0109503663003663
+      },
+      "mean_predicted_minutes": 72.87549652014653,
+      "mean_actual_minutes": 75.88644688644689
+    },
+    "80-1000": {
+      "points": {
+        "n": 42,
+        "mae": 1.9163964285714286,
+        "rmse": 2.3522910996642237,
+        "bias": -0.16528928571428575
+      },
+      "minutes": {
+        "n": 42,
+        "mae": 8.916114285714286,
+        "rmse": 8.941929660480236,
+        "bias": -8.428340476190476
+      },
+      "mean_predicted_minutes": 81.09546904761905,
+      "mean_actual_minutes": 89.52380952380952
+    }
+  },
+  "high_xp": {
+    "2": {
+      "points": {
+        "n": 382,
+        "mae": 2.2093438481675394,
+        "rmse": 2.936150470427811,
+        "bias": -0.23646479057591618
+      },
+      "spearman": 0.1827218489768604
+    },
+    "4": {
+      "points": {
+        "n": 9,
+        "mae": 3.481694444444444,
+        "rmse": 4.219325594248183,
+        "bias": -1.5580277777777778
+      },
+      "spearman": -0.14286218715872304
+    },
+    "6": {
+      "points": {
+        "n": 0,
+        "mae": null,
+        "rmse": null,
+        "bias": null
+      },
+      "spearman": null
+    }
+  },
+  "ranking": {
+    "6": {
+      "spearman_all": 0.70306479564268,
+      "spearman_top20": 0.04581510113860724,
+      "top20_mean_actual": 3.2,
+      "top5": [
+        {
+          "gw": 6,
+          "player_id": "ply_3e0838d0-8f8c-596d-a24c-a671ff67ab21",
+          "provider_id": "542",
+          "name": "E.Le F\u00e9e",
+          "position": "MID",
+          "xp": 4.851149999999999,
+          "predicted_minutes": 77.49305,
+          "points": 2,
+          "minutes": 80,
+          "goals": 0,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 27.355908361944444,
+          "p_10_plus": 0.1796,
+          "p_15_plus": 0.04725,
+          "p_5_plus": 0.39755,
+          "p_8_plus": 0.27215,
+          "p_blank": 0.589,
+          "p_return": 0.41100000000000003,
+          "previous_gw": 5,
+          "recent_mean": 4.333333333333333,
+          "minutes_aware": 3.7311468518518516,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 6,
+          "player_id": "ply_e12222fa-6342-5394-a9ee-d1d9e71e96a5",
+          "provider_id": "426",
+          "name": "B.Fernandes",
+          "position": "MID",
+          "xp": 4.48535,
+          "predicted_minutes": 77.6891,
+          "points": 1,
+          "minutes": 90,
+          "goals": 0,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 27.355908361944444,
+          "p_10_plus": 0.16190000000000002,
+          "p_15_plus": 0.03485,
+          "p_5_plus": 0.34885,
+          "p_8_plus": 0.22885,
+          "p_blank": 0.64185,
+          "p_return": 0.35814999999999997,
+          "previous_gw": 2,
+          "recent_mean": 2,
+          "minutes_aware": 1.7264244444444443,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 6,
+          "player_id": "ply_689f18ea-1d59-5dce-881c-26ded99a1cab",
+          "provider_id": "427",
+          "name": "Mbeumo",
+          "position": "MID",
+          "xp": 4.2595,
+          "predicted_minutes": 75.52685,
+          "points": 8,
+          "minutes": 90,
+          "goals": 1,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 27.355908361944444,
+          "p_10_plus": 0.15375,
+          "p_15_plus": 0.031599999999999996,
+          "p_5_plus": 0.30735,
+          "p_8_plus": 0.22340000000000002,
+          "p_blank": 0.68775,
+          "p_return": 0.31225,
+          "previous_gw": 2,
+          "recent_mean": 4,
+          "minutes_aware": 3.356748888888889,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 6,
+          "player_id": "ply_4ec6f996-35b7-5550-bc93-405963fe1f83",
+          "provider_id": "544",
+          "name": "Xhaka",
+          "position": "MID",
+          "xp": 4.174799999999999,
+          "predicted_minutes": 77.7251,
+          "points": 2,
+          "minutes": 90,
+          "goals": 0,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 27.355908361944444,
+          "p_10_plus": 0.13075,
+          "p_15_plus": 0.02775,
+          "p_5_plus": 0.3313,
+          "p_8_plus": 0.2037,
+          "p_blank": 0.6551,
+          "p_return": 0.3449,
+          "previous_gw": 2,
+          "recent_mean": 2,
+          "minutes_aware": 1.7272244444444445,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 6,
+          "player_id": "ply_f5b0178d-f837-5554-9cd4-723b48c97826",
+          "provider_id": "411",
+          "name": "Haaland",
+          "position": "FWD",
+          "xp": 3.9648000000000008,
+          "predicted_minutes": 76.8707,
+          "points": 6,
+          "minutes": 79,
+          "goals": 1,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 27.355908361944444,
+          "p_10_plus": 0.059250000000000004,
+          "p_15_plus": 0.008749999999999999,
+          "p_5_plus": 0.3129,
+          "p_8_plus": 0.25765,
+          "p_blank": 0.6835,
+          "p_return": 0.3165,
+          "previous_gw": 6,
+          "recent_mean": 8,
+          "minutes_aware": 6.832951111111111,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        }
+      ]
+    },
+    "7": {
+      "spearman_all": 0.6895347732558749,
+      "spearman_top20": 0.432707195621905,
+      "top20_mean_actual": 5.25,
+      "top5": [
+        {
+          "gw": 7,
+          "player_id": "ply_f5b0178d-f837-5554-9cd4-723b48c97826",
+          "provider_id": "411",
+          "name": "Haaland",
+          "position": "FWD",
+          "xp": 4.593499999999999,
+          "predicted_minutes": 79.1927,
+          "points": 13,
+          "minutes": 90,
+          "goals": 2,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 120.70434804916667,
+          "p_10_plus": 0.09175,
+          "p_15_plus": 0.01595,
+          "p_5_plus": 0.3747,
+          "p_8_plus": 0.3162,
+          "p_blank": 0.6213500000000001,
+          "p_return": 0.37864999999999993,
+          "previous_gw": 6,
+          "recent_mean": 8,
+          "minutes_aware": 7.039351111111111,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 7,
+          "player_id": "ply_5550a04a-6372-5e9d-ad26-b6482d3a387f",
+          "provider_id": "127",
+          "name": "Gomez",
+          "position": "MID",
+          "xp": 4.23765,
+          "predicted_minutes": 76.12295,
+          "points": 8,
+          "minutes": 90,
+          "goals": 1,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 120.70434804916667,
+          "p_10_plus": 0.13055,
+          "p_15_plus": 0.02955,
+          "p_5_plus": 0.3206,
+          "p_8_plus": 0.2244,
+          "p_blank": 0.67065,
+          "p_return": 0.32935000000000003,
+          "previous_gw": 8,
+          "recent_mean": 4.333333333333333,
+          "minutes_aware": 3.835652519379845,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 7,
+          "player_id": "ply_5a9093a1-ee9b-56b3-9d91-c976cc8f2046",
+          "provider_id": "124",
+          "name": "Gro\u00df",
+          "position": "MID",
+          "xp": 4.210350000000001,
+          "predicted_minutes": 80.24325,
+          "points": 5,
+          "minutes": 70,
+          "goals": 0,
+          "assists": 1,
+          "fixtures": 1,
+          "freshness_hours": 120.70434804916667,
+          "p_10_plus": 0.1206,
+          "p_15_plus": 0.02425,
+          "p_5_plus": 0.33915,
+          "p_8_plus": 0.20065,
+          "p_blank": 0.6449,
+          "p_return": 0.35509999999999997,
+          "previous_gw": 14,
+          "recent_mean": 10.666666666666666,
+          "minutes_aware": 9.510311111111111,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 7,
+          "player_id": "ply_4c78fd4e-2ce5-506c-a9ed-f0cccc23cb41",
+          "provider_id": "106",
+          "name": "Thiago",
+          "position": "FWD",
+          "xp": 4.1452,
+          "predicted_minutes": 80.40015,
+          "points": 4,
+          "minutes": 90,
+          "goals": 0,
+          "assists": 1,
+          "fixtures": 1,
+          "freshness_hours": 120.70434804916667,
+          "p_10_plus": 0.06745,
+          "p_15_plus": 0.01035,
+          "p_5_plus": 0.3255,
+          "p_8_plus": 0.2719,
+          "p_blank": 0.6716500000000001,
+          "p_return": 0.3283499999999999,
+          "previous_gw": 5,
+          "recent_mean": 2.6666666666666665,
+          "minutes_aware": 2.3822266666666665,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "gw": 7,
+          "player_id": "ply_42ff3227-d1ac-5ba2-8023-015bb140ccb8",
+          "provider_id": "68",
+          "name": "Tavernier",
+          "position": "MID",
+          "xp": 4.020250000000001,
+          "predicted_minutes": 76.75915,
+          "points": 10,
+          "minutes": 78,
+          "goals": 1,
+          "assists": 0,
+          "fixtures": 1,
+          "freshness_hours": 120.70434804916667,
+          "p_10_plus": 0.1235,
+          "p_15_plus": 0.02395,
+          "p_5_plus": 0.29245,
+          "p_8_plus": 0.1991,
+          "p_blank": 0.69955,
+          "p_return": 0.30045,
+          "previous_gw": 2,
+          "recent_mean": 6.666666666666667,
+          "minutes_aware": 6.2917336065573775,
+          "baseline_gws": [
+            3,
+            4,
+            5
+          ]
+        }
+      ]
+    }
+  },
+  "calibration": {
+    "p_5_plus": {
+      "n": 1334,
+      "brier": 0.07886994790479761,
+      "bins": {
+        "0-0.1": {
+          "n": 913,
+          "predicted": 0.015914403066812705,
+          "observed": 0.03285870755750274
+        },
+        "0.1-0.25": {
+          "n": 298,
+          "predicted": 0.17760906040268457,
+          "observed": 0.2181208053691275
+        },
+        "0.25-0.5": {
+          "n": 123,
+          "predicted": 0.2864012195121951,
+          "observed": 0.2926829268292683
+        }
+      }
+    },
+    "p_8_plus": {
+      "n": 1334,
+      "brier": 0.03886352526986507,
+      "bins": {
+        "0-0.1": {
+          "n": 1149,
+          "predicted": 0.020126327241079198,
+          "observed": 0.026979982593559618
+        },
+        "0.1-0.25": {
+          "n": 180,
+          "predicted": 0.15041722222222223,
+          "observed": 0.14444444444444443
+        },
+        "0.25-0.5": {
+          "n": 5,
+          "predicted": 0.27373,
+          "observed": 0.2
+        }
+      }
+    },
+    "p_10_plus": {
+      "n": 1334,
+      "brier": 0.015882828982383808,
+      "bins": {
+        "0-0.1": {
+          "n": 1314,
+          "predicted": 0.014539497716894978,
+          "observed": 0.015220700152207
+        },
+        "0.1-0.25": {
+          "n": 20,
+          "predicted": 0.1230275,
+          "observed": 0.1
+        }
+      }
+    },
+    "p_15_plus": {
+      "n": 1334,
+      "brier": 0.002257776296851574,
+      "bins": {
+        "0-0.1": {
+          "n": 1334,
+          "predicted": 0.0023789355322338833,
+          "observed": 0.0022488755622188904
+        }
+      }
+    }
+  },
+  "points_strata": {
+    "[0,2)": {
+      "n": 952,
+      "mae": 0.6522459558823529,
+      "rmse": 1.5777312140155866,
+      "bias": -0.12444017857142858
+    },
+    "[2,4)": {
+      "n": 373,
+      "mae": 2.1786436997319036,
+      "rmse": 2.8981781395870336,
+      "bias": -0.20457721179624658
+    },
+    "[4,6)": {
+      "n": 9,
+      "mae": 3.481694444444444,
+      "rmse": 4.219325594248183,
+      "bias": -1.5580277777777778
+    },
+    "[6,8)": {
+      "n": 0,
+      "mae": null,
+      "rmse": null,
+      "bias": null
+    },
+    "[8,inf)": {
+      "n": 0,
+      "mae": null,
+      "rmse": null,
+      "bias": null
+    }
+  },
+  "error_sources": {
+    "played": {
+      "n": 619,
+      "mae": 1.94225056542811,
+      "rmse": 2.93128761790123,
+      "bias": -0.7616332794830372
+    },
+    "did_not_play": {
+      "n": 715,
+      "mae": 0.3673488111888112,
+      "rmse": 0.6938711850535029,
+      "bias": 0.3673488111888112
+    },
+    "minutes_error_30plus": {
+      "n": 198,
+      "mae": 2.2405785353535355,
+      "rmse": 3.1301487517679485,
+      "bias": -0.4434330808080808
+    }
+  },
+  "archive_report_shapes": [
+    {
+      "gw": 6,
+      "created": "2026-10-09T11:02:24.640547+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 6,
+      "created": "2026-10-09T09:47:48.747651+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 6,
+      "created": "2026-10-10T08:19:25.656577+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 7,
+      "created": "2026-10-12T10:26:03.865588+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 8,
+      "created": "2026-10-22T08:18:53.789946+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 8,
+      "created": "2026-10-22T12:15:32.831297+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 8,
+      "created": "2026-10-22T18:06:14.497908+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 8,
+      "created": "2026-10-23T06:54:10.706865+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    },
+    {
+      "gw": 8,
+      "created": "2026-10-23T08:09:20.762447+00:00",
+      "keys": [
+        "chip_opportunity_forecast",
+        "chip_opportunity_forecast_reference",
+        "context_id",
+        "created_at",
+        "external_mutations",
+        "feasible_plans",
+        "mode",
+        "planning_context",
+        "player_availability_snapshot",
+        "player_availability_snapshot_reference",
+        "player_metadata",
+        "player_minutes_history_snapshot",
+        "player_minutes_history_snapshot_reference",
+        "policy_results",
+        "projection_run_id",
+        "recommendation",
+        "report_id",
+        "report_version",
+        "schema_version",
+        "shadow_report",
+        "strategy_previews",
+        "strategy_unavailable"
+      ],
+      "v3": null,
+      "captaincy": null,
+      "strategic_plan": null
+    }
+  ],
+  "largest_errors": [
+    {
+      "gw": 6,
+      "player_id": "ply_00642981-de38-515b-a886-73897029bd55",
+      "provider_id": "101",
+      "name": "Henderson",
+      "position": "MID",
+      "xp": 0.7652,
+      "predicted_minutes": 21.7169,
+      "points": 18,
+      "minutes": 90,
+      "goals": 2,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.0038499999999999997,
+      "p_15_plus": 0.00015000000000000001,
+      "p_5_plus": 0.0197,
+      "p_8_plus": 0.0087,
+      "p_blank": 0.979,
+      "p_return": 0.02100000000000002,
+      "previous_gw": 2,
+      "recent_mean": 0.6666666666666666,
+      "minutes_aware": 0.4825977777777778,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 6,
+      "player_id": "ply_4d18cdf1-7217-5427-bfff-6495871b6319",
+      "provider_id": "115",
+      "name": "De Cuyper",
+      "position": "DEF",
+      "xp": 2.4013000000000004,
+      "predicted_minutes": 74.489,
+      "points": 15,
+      "minutes": 67,
+      "goals": 1,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.03545,
+      "p_15_plus": 0.0081,
+      "p_5_plus": 0.20275,
+      "p_8_plus": 0.07355,
+      "p_blank": 0.8134,
+      "p_return": 0.1866,
+      "previous_gw": 6,
+      "recent_mean": 7,
+      "minutes_aware": 6.11042578125,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_683ccf7f-b739-5407-85b5-0528d33fd16b",
+      "provider_id": "156",
+      "name": "Neto",
+      "position": "MID",
+      "xp": 2.8047499999999994,
+      "predicted_minutes": 70.17135,
+      "points": 15,
+      "minutes": 90,
+      "goals": 2,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.0462,
+      "p_15_plus": 0.00395,
+      "p_5_plus": 0.155,
+      "p_8_plus": 0.08075,
+      "p_blank": 0.8375,
+      "p_return": 0.16249999999999998,
+      "previous_gw": 2,
+      "recent_mean": 2,
+      "minutes_aware": 1.6774027888446217,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 6,
+      "player_id": "ply_cff5d7dd-c71b-54fc-9a5c-f6202b3f1402",
+      "provider_id": "599",
+      "name": "Cherif",
+      "position": "FWD",
+      "xp": 0.5083,
+      "predicted_minutes": 13.11705,
+      "points": 12,
+      "minutes": 77,
+      "goals": 1,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.0003,
+      "p_15_plus": 5e-05,
+      "p_5_plus": 0.0105,
+      "p_8_plus": 0.006,
+      "p_blank": 0.9884,
+      "p_return": 0.011600000000000055,
+      "previous_gw": 0,
+      "recent_mean": 0.3333333333333333,
+      "minutes_aware": 0.43723500000000004,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 6,
+      "player_id": "ply_1f0390f1-f227-59e5-95c4-7717c4ad3080",
+      "provider_id": "400",
+      "name": "Doku",
+      "position": "MID",
+      "xp": 0.5867500000000001,
+      "predicted_minutes": 14.98975,
+      "points": 12,
+      "minutes": 34,
+      "goals": 1,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.0015,
+      "p_15_plus": 5e-05,
+      "p_5_plus": 0.009300000000000001,
+      "p_8_plus": 0.0037,
+      "p_blank": 0.98845,
+      "p_return": 0.01154999999999995,
+      "previous_gw": 1,
+      "recent_mean": 0.3333333333333333,
+      "minutes_aware": 0.9993166666666667,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 6,
+      "player_id": "ply_6bdeb997-7e27-5b53-bfc0-c6ee11adbef8",
+      "provider_id": "165",
+      "name": "Jo\u00e3o Pedro",
+      "position": "FWD",
+      "xp": 1.7961999999999998,
+      "predicted_minutes": 43.537,
+      "points": 12,
+      "minutes": 71,
+      "goals": 2,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.0149,
+      "p_15_plus": 0.0013,
+      "p_5_plus": 0.11635,
+      "p_8_plus": 0.09455,
+      "p_blank": 0.8832,
+      "p_return": 0.11680000000000001,
+      "previous_gw": 0,
+      "recent_mean": 4.333333333333333,
+      "minutes_aware": 3.1443388888888886,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_2da08f36-be20-5d01-ab7b-da2e389bddd8",
+      "provider_id": "148",
+      "name": "Hato",
+      "position": "DEF",
+      "xp": 1.0636500000000002,
+      "predicted_minutes": 36.78845,
+      "points": 11,
+      "minutes": 90,
+      "goals": 0,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.0029,
+      "p_15_plus": 0.0006,
+      "p_5_plus": 0.0761,
+      "p_8_plus": 0.02115,
+      "p_blank": 0.98025,
+      "p_return": 0.019750000000000045,
+      "previous_gw": 0,
+      "recent_mean": 1,
+      "minutes_aware": 1.0612052884615384,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 6,
+      "player_id": "ply_df93c88e-2301-5904-8367-d565f07d8eda",
+      "provider_id": "236",
+      "name": "Dewsbury-Hall",
+      "position": "MID",
+      "xp": 3.298100000000001,
+      "predicted_minutes": 77.59385,
+      "points": 13,
+      "minutes": 90,
+      "goals": 1,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.07479999999999999,
+      "p_15_plus": 0.00945,
+      "p_5_plus": 0.2138,
+      "p_8_plus": 0.12435,
+      "p_blank": 0.7801,
+      "p_return": 0.21989999999999998,
+      "previous_gw": 3,
+      "recent_mean": 2.3333333333333335,
+      "minutes_aware": 2.0116924074074074,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_62021fba-785e-5ce9-ac91-84162a503f22",
+      "provider_id": "129",
+      "name": "Ayari",
+      "position": "MID",
+      "xp": 3.3592,
+      "predicted_minutes": 70.6322,
+      "points": 13,
+      "minutes": 80,
+      "goals": 1,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.08059999999999999,
+      "p_15_plus": 0.01485,
+      "p_5_plus": 0.2306,
+      "p_8_plus": 0.15025,
+      "p_blank": 0.7639,
+      "p_return": 0.23609999999999998,
+      "previous_gw": 3,
+      "recent_mean": 4.333333333333333,
+      "minutes_aware": 3.4008096296296295,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_e902bab7-9a3c-54ef-b615-44d54eff9910",
+      "provider_id": "53",
+      "name": "Manzambi",
+      "position": "MID",
+      "xp": 1.8015999999999999,
+      "predicted_minutes": 42.4214,
+      "points": 11,
+      "minutes": 71,
+      "goals": 1,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.02405,
+      "p_15_plus": 0.00195,
+      "p_5_plus": 0.08555,
+      "p_8_plus": 0.045649999999999996,
+      "p_blank": 0.91025,
+      "p_return": 0.08975,
+      "previous_gw": 13,
+      "recent_mean": 4.666666666666667,
+      "minutes_aware": 6.060199999999999,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_7c8f7685-57a6-516e-b69e-622100c0c39e",
+      "provider_id": "379",
+      "name": "Isak",
+      "position": "FWD",
+      "xp": 0.0,
+      "predicted_minutes": 0.0,
+      "points": 9,
+      "minutes": 78,
+      "goals": 1,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0,
+      "p_15_plus": 0,
+      "p_5_plus": 0,
+      "p_8_plus": 0,
+      "p_blank": 1.0,
+      "p_return": 0.0,
+      "previous_gw": 8,
+      "recent_mean": 7.666666666666667,
+      "minutes_aware": 0.0,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_f5b0178d-f837-5554-9cd4-723b48c97826",
+      "provider_id": "411",
+      "name": "Haaland",
+      "position": "FWD",
+      "xp": 4.593499999999999,
+      "predicted_minutes": 79.1927,
+      "points": 13,
+      "minutes": 90,
+      "goals": 2,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.09175,
+      "p_15_plus": 0.01595,
+      "p_5_plus": 0.3747,
+      "p_8_plus": 0.3162,
+      "p_blank": 0.6213500000000001,
+      "p_return": 0.37864999999999993,
+      "previous_gw": 6,
+      "recent_mean": 8,
+      "minutes_aware": 7.039351111111111,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 6,
+      "player_id": "ply_774a4151-62c0-576e-86e0-8363885114a1",
+      "provider_id": "592",
+      "name": "Ouattara",
+      "position": "DEF",
+      "xp": 1.6827000000000003,
+      "predicted_minutes": 40.765,
+      "points": 10,
+      "minutes": 90,
+      "goals": 1,
+      "assists": 0,
+      "fixtures": 1,
+      "freshness_hours": 27.355908361944444,
+      "p_10_plus": 0.01175,
+      "p_15_plus": 0.00365,
+      "p_5_plus": 0.11165,
+      "p_8_plus": 0.03555,
+      "p_blank": 0.95485,
+      "p_return": 0.04515000000000002,
+      "previous_gw": 2,
+      "recent_mean": 1.3333333333333333,
+      "minutes_aware": 1.5678846153846155,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_4b780194-2392-5577-a4b7-f11e753739fd",
+      "provider_id": "79",
+      "name": "Evanilson",
+      "position": "FWD",
+      "xp": 3.7935000000000003,
+      "predicted_minutes": 77.32635,
+      "points": 12,
+      "minutes": 78,
+      "goals": 1,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.05205,
+      "p_15_plus": 0.0068,
+      "p_5_plus": 0.2888,
+      "p_8_plus": 0.22965,
+      "p_blank": 0.70825,
+      "p_return": 0.29174999999999995,
+      "previous_gw": 2,
+      "recent_mean": 3,
+      "minutes_aware": 2.577545,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "gw": 7,
+      "player_id": "ply_1d368d97-fc4b-5cd6-8d9e-98651df19dbe",
+      "provider_id": "138",
+      "name": "Kostoulas",
+      "position": "FWD",
+      "xp": 3.9073000000000007,
+      "predicted_minutes": 66.35545,
+      "points": 12,
+      "minutes": 70,
+      "goals": 1,
+      "assists": 1,
+      "fixtures": 1,
+      "freshness_hours": 120.70434804916667,
+      "p_10_plus": 0.0663,
+      "p_15_plus": 0.0088,
+      "p_5_plus": 0.3102,
+      "p_8_plus": 0.2452,
+      "p_blank": 0.6847,
+      "p_return": 0.3153,
+      "previous_gw": 10,
+      "recent_mean": 7.333333333333333,
+      "minutes_aware": 5.88637056451613,
+      "baseline_gws": [
+        3,
+        4,
+        5
+      ]
+    }
+  ]
+}

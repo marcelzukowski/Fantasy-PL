@@ -155,6 +155,13 @@ def test_decision_bridge_runs_existing_engine_and_preserves_account_state(tmp_pa
     strategic_preview = report["strategy_previews"]["strategic"]
     assert tuple(strategic_preview["transfers_out"]) == tuple(report["strategic_v3"]["current_action"]["transfers_out"])
     assert tuple(strategic_preview["transfers_in"]) == tuple(report["strategic_v3"]["current_action"]["transfers_in"])
+    selected_v3 = report["strategic_v3"]
+    assert selected_v3["total_path_value"] >= selected_v3["hold_now_counterfactual"]["total_path_value"] - 1e-9
+    assert selected_v3["delta_vs_alternative"] == pytest.approx(
+        selected_v3["total_path_value"] - selected_v3["alternative_path"]["total_path_value"]
+    )
+    for key in ("starting_xi", "bench_order", "captain", "vice_captain"):
+        assert strategic_preview[key] == selected_v3["path"][0][key]
     for preview in report["strategy_previews"].values():
         assert len(preview["starting_xi"]) == 11
         assert len(preview["bench_order"]) == 4
@@ -396,11 +403,56 @@ def test_strategic_v3_and_roll_counterfactual_render_without_using_v2_utility(qa
     try:
         window._render_strategic_action(report, state)
         assert "Recommended now: TRANSFER" in window.analysis_strategic_summary.text()
-        assert "3-GW path advantage vs Roll: +1.50" in window.analysis_strategic_summary.text()
+        assert "V3 objective advantage vs Roll: +1.50" in window.analysis_strategic_summary.text()
         assert "V2 utility" not in window.analysis_strategic_summary.text()
         assert "Current GW: HOLD" in window.analysis_roll_summary.text()
         assert "Price risk: HIGH" in window.analysis_roll_summary.text()
         assert "Next-GW action is indicative" in window.analysis_strategic_summary.text()
+    finally:
+        window.close()
+
+
+def test_v3_hold_winner_displays_its_advantage_over_the_unrestricted_alternative(qapp):
+    window = MainWindow(ROOT)
+    strategic = {
+        "current_action": {"action": "HOLD", "transfers_out": [], "transfers_in": [],
+                           "free_transfers_before": 4, "free_transfers_after": 5},
+        "projected_3gw_path_points": 142.42035, "terminal_ft_value": 5.0,
+        "total_path_value": 147.42035, "delta_vs_hold_now": 0.0,
+        "delta_vs_alternative": 0.51650,
+        "alternative_path": {"total_path_value": 146.90385},
+        "hold_now_counterfactual": {
+            "projected_3gw_path_points": 142.42035,
+            "path": [{"action": "HOLD", "free_transfers_before": 4, "free_transfers_after": 5},
+                     {"action": "HOLD"}],
+        },
+    }
+    try:
+        window._render_strategic_action({"strategic_v3": strategic}, DesktopSquadState(free_transfers=4))
+        text = window.analysis_strategic_summary.text()
+        assert "Recommended now: HOLD / ROLL" in text
+        assert "Recommended now: TRANSFER" not in text
+        assert "V3 complete objective: 147.42" in text
+        assert "V3 objective advantage vs alternative: +0.52" in text
+        assert "Current GW: HOLD" in window.analysis_roll_summary.text()
+        assert "Difference vs recommended path: +0.00" in window.analysis_roll_summary.text()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("action", ["HOLD", "TRANSFER"])
+def test_v3_search_limit_note_tracks_report_ft_without_changing_recommendation(qapp, action):
+    window = MainWindow(ROOT)
+    note = "V3 evaluates up to 2 transfers per gameweek. Additional free transfers are not evaluated."
+    try:
+        for ft in (2, 3, 5, 1):
+            strategic = {
+                "current_action": {"action": action, "free_transfers_before": ft},
+                "hold_now_counterfactual": {"path": []},
+            }
+            window._render_strategic_action({"strategic_v3": strategic}, DesktopSquadState(free_transfers=4))
+            assert (note in window.analysis_strategic_summary.text()) == (ft > 2)
+            assert strategic["current_action"] == {"action": action, "free_transfers_before": ft}
     finally:
         window.close()
 

@@ -1,0 +1,136 @@
+{
+  "validated_bundles": [
+    {
+      "run_id": "20260915T130524Z",
+      "gameweek": 5,
+      "mode": "PRODUCTION",
+      "simulations": 10000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260915T194106Z",
+      "gameweek": 5,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 25000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260916T204815Z",
+      "gameweek": 5,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 1000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260917T120819Z",
+      "gameweek": 5,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 256,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260917T182728Z",
+      "gameweek": 5,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 25000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260918T101242Z",
+      "gameweek": 5,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 25000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260921T200047Z",
+      "gameweek": 5,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 1000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20260921T204826Z",
+      "gameweek": 6,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 256,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20261009T063838Z",
+      "gameweek": 6,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 20000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20261010T081128Z",
+      "gameweek": 6,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 256,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20261010T091918Z",
+      "gameweek": 6,
+      "mode": "PRODUCTION",
+      "simulations": 10000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20261012T091744Z",
+      "gameweek": 7,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 20000,
+      "accepted": true,
+      "error": null
+    },
+    {
+      "run_id": "20261022T071806Z",
+      "gameweek": 8,
+      "mode": "NON-PRODUCTION DIAGNOSTIC",
+      "simulations": 20000,
+      "accepted": true,
+      "error": null
+    }
+  ],
+  "discovery_seconds": [
+    0.5999922000009974,
+    0.5877880000007281,
+    0.5920007000022451
+  ],
+  "discovered_gw8": 1,
+  "latest_run": "20261022T071806Z",
+  "latest_label": "2026-10-22 09:18 \u00b7 GW8 \u00b7 20k \u00b7 V22_LINEUP_COHERENT_LOGIT",
+  "latest_detail": "Active: 2026-10-22 09:18 \u00b7 GW8 \u00b7 20k \u00b7 V22_LINEUP_COHERENT_LOGIT \u00b7 seed 42 \u00b7 Shadow: unavailable",
+  "market_ui_status": null,
+  "market_sidecar_status": "SUCCESS",
+  "market_sidecar_path": "data\\processed\\market_shadow\\2026-27\\20261022T071806Z\\market_shadow_20261022T081106Z.json",
+  "market_sidecar_prediction_timestamp": null,
+  "market_sidecar_snapshot_timestamp": "2026-10-22T08:11:11.730630+00:00",
+  "projection_timestamp": "2026-10-22T07:18:06.398860+00:00",
+  "market_coverage": {
+    "current_gameweek_fixture_count": 10,
+    "mapped_fixture_count": 10,
+    "market_snapshot_timestamp": "2026-10-22T08:11:11.730630+00:00",
+    "pit_usable_props_fixture_count": 10,
+    "pit_usable_quote_count": 2371,
+    "player_prop_coverage": "321/668",
+    "props_available_fixture_count": 10,
+    "props_requested_fixture_count": 10,
+    "quote_count": 2371,
+    "shadow_prediction_timestamp": "2026-10-22T08:11:11.730630+00:00"
+  },
+  "production_influence": false
+}

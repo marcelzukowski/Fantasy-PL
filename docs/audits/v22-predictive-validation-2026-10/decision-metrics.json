@@ -1,0 +1,222 @@
+{
+  "decisions": [
+    {
+      "gw": 6,
+      "archive": "data/processed/historical_replay_cases/2026-27/GW06/archive_c0f8a28c11fc499ae0d71e6c/archive_case.json",
+      "created": "2026-10-10T08:19:25.656577+00:00",
+      "optimizer_version": "optimizer_v1",
+      "captain": "E.Le F\u00e9e",
+      "captain_xp": 4.851149999999999,
+      "captain_points": 2,
+      "benchmarked_captains_on_same_recorded_xi": {
+        "previous_gw": {
+          "player": "Gro\u00df",
+          "forecast": 14,
+          "points": 6
+        },
+        "recent_mean": {
+          "player": "Gro\u00df",
+          "forecast": 10.666666666666666,
+          "points": 6
+        }
+      },
+      "transfers": [
+        {
+          "out": "Palmer",
+          "in": "Mbeumo",
+          "forecast_difference": 1.3433500000000005,
+          "realised_raw_player_difference": 0
+        }
+      ],
+      "policy_keys": [
+        "greedy",
+        "optimizer_v1",
+        "optimizer_v2",
+        "strategic_v3"
+      ],
+      "strategic_preview_keys": [
+        [
+          "bench_order",
+          "captain",
+          "free_transfers_after",
+          "plan_id",
+          "resulting_bank",
+          "starting_xi",
+          "strategy_key",
+          "transfers_in",
+          "transfers_out",
+          "vice_captain"
+        ]
+      ],
+      "decision_margin": 0.08470000000000066
+    },
+    {
+      "gw": 7,
+      "archive": "data/processed/historical_replay_cases/2026-27/GW07/archive_be78cedcf8ee2733d27b2fc5/archive_case.json",
+      "created": "2026-10-12T10:26:03.865588+00:00",
+      "optimizer_version": "optimizer_v1",
+      "captain": "Haaland",
+      "captain_xp": 4.593499999999999,
+      "captain_points": 13,
+      "benchmarked_captains_on_same_recorded_xi": {
+        "previous_gw": {
+          "player": "Gro\u00df",
+          "forecast": 14,
+          "points": 5
+        },
+        "recent_mean": {
+          "player": "Gro\u00df",
+          "forecast": 10.666666666666666,
+          "points": 5
+        }
+      },
+      "transfers": [
+        {
+          "out": "Calafiori",
+          "in": "Van Hecke",
+          "forecast_difference": 0.6035500000000003,
+          "realised_raw_player_difference": -2
+        }
+      ],
+      "policy_keys": [
+        "greedy",
+        "optimizer_v1",
+        "optimizer_v2",
+        "strategic_v3"
+      ],
+      "strategic_preview_keys": [
+        [
+          "bench_order",
+          "captain",
+          "free_transfers_after",
+          "plan_id",
+          "resulting_bank",
+          "starting_xi",
+          "strategy_key",
+          "transfers_in",
+          "transfers_out",
+          "vice_captain"
+        ]
+      ],
+      "decision_margin": 0.0828000000000002
+    }
+  ],
+  "matched_high_xp_baselines": {
+    "0": {
+      "previous_gw": {
+        "v22": {
+          "n": 1334,
+          "mae": 1.0981315592203897,
+          "rmse": 2.060364639917602,
+          "bias": -0.1565191904047976
+        },
+        "baseline": {
+          "n": 1334,
+          "mae": 1.4032983508245878,
+          "rmse": 2.877821931681105,
+          "bias": 0.11094452773613193
+        }
+      },
+      "recent_mean": {
+        "v22": {
+          "n": 1334,
+          "mae": 1.0981315592203897,
+          "rmse": 2.060364639917602,
+          "bias": -0.1565191904047976
+        },
+        "baseline": {
+          "n": 1334,
+          "mae": 1.274862568715642,
+          "rmse": 2.3637272255490056,
+          "bias": 0.063968015992004
+        }
+      },
+      "minutes_aware": {
+        "v22": {
+          "n": 748,
+          "mae": 1.7563096256684492,
+          "rmse": 2.6928691878367954,
+          "bias": -0.29318783422459893
+        },
+        "baseline": {
+          "n": 748,
+          "mae": 2.459812337432999,
+          "rmse": 3.860805232980488,
+          "bias": 0.5424288450148788
+        }
+      }
+    },
+    "2": {
+      "previous_gw": {
+        "v22": {
+          "n": 382,
+          "mae": 2.2093438481675394,
+          "rmse": 2.936150470427811,
+          "bias": -0.23646479057591618
+        },
+        "baseline": {
+          "n": 382,
+          "mae": 3.0706806282722514,
+          "rmse": 4.310282360984442,
+          "bias": 0.6256544502617801
+        }
+      },
+      "recent_mean": {
+        "v22": {
+          "n": 382,
+          "mae": 2.2093438481675394,
+          "rmse": 2.936150470427811,
+          "bias": -0.23646479057591618
+        },
+        "baseline": {
+          "n": 382,
+          "mae": 2.668411867364747,
+          "rmse": 3.4611615572216596,
+          "bias": 0.5113438045375218
+        }
+      },
+      "minutes_aware": {
+        "v22": {
+          "n": 382,
+          "mae": 2.2093438481675394,
+          "rmse": 2.936150470427811,
+          "bias": -0.23646479057591618
+        },
+        "baseline": {
+          "n": 382,
+          "mae": 2.5057049112448952,
+          "rmse": 3.324986972245049,
+          "bias": 0.12374721136601032
+        }
+      }
+    }
+  },
+  "zero_baseline": {
+    "0": {
+      "n": 1334,
+      "mae": 1.3643178410794603,
+      "rmse": 2.7824681373795164,
+      "bias": -1.3373313343328337
+    },
+    "2": {
+      "n": 382,
+      "mae": 3.196335078534031,
+      "rmse": 4.335111730656718,
+      "bias": -3.149214659685864
+    }
+  },
+  "probabilities": {
+    "p_blank": {
+      "n": 1334,
+      "mean_prediction": 0.9507625562218891,
+      "observed": 0.9212893553223388,
+      "brier": 0.06486505843890555
+    },
+    "p_return": {
+      "n": 1334,
+      "mean_prediction": 0.04923744377811094,
+      "observed": 0.07871064467766117,
+      "brier": 0.06486505843890555
+    }
+  }
+}

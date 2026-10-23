@@ -94,10 +94,16 @@ class StrategicPlannerV3Result:
     best_path: StrategicPath
     hold_now_path: StrategicPath
     diagnostics: Mapping[str, object]
+    alternative_path: StrategicPath | None = None
 
     @property
     def delta_vs_hold_now(self) -> float:
         return self.best_path.total_path_value - self.hold_now_path.total_path_value
+
+    @property
+    def delta_vs_alternative(self) -> float:
+        alternative = self.alternative_path or self.hold_now_path
+        return self.best_path.total_path_value - alternative.total_path_value
 
     def as_dict(self) -> dict:
         def action(row: StrategicAction) -> dict:
@@ -136,13 +142,16 @@ class StrategicPlannerV3Result:
 
         best = path(self.best_path)
         hold = path(self.hold_now_path)
+        alternative_path = self.alternative_path or self.hold_now_path
         return {
             "version": "strategic_planner_v3",
             "current_action": action(self.best_path.steps[0].action),
             "projected_next_action": action(self.best_path.steps[1].action),
             **best,
             "hold_now_counterfactual": path(self.hold_now_path),
+            "alternative_path": path(alternative_path),
             "delta_vs_hold_now": self.delta_vs_hold_now,
+            "delta_vs_alternative": self.delta_vs_alternative,
             "price_risk": dict(self.best_path.steps[1].price_risk),
             "diagnostics": dict(self.diagnostics),
         }
@@ -207,6 +216,8 @@ class StrategicPlannerV3:
             pool_by_id.setdefault(player.player_id, player)
         best = self._search(state, pool_by_id, projections, signals=signals, force_hold_now=False)
         hold = self._search(state, pool_by_id, projections, signals=signals, force_hold_now=True)
+        # Reconcile independent beams; prefer HOLD within the optimizer's 1e-9 precision.
+        selected, alternative = (best, hold) if best.total_path_value > hold.total_path_value + 1e-9 else (hold, best)
         diagnostics = {
             "planner_version": self.VERSION,
             "planning_horizon": self.config.planning_horizon,
@@ -219,7 +230,7 @@ class StrategicPlannerV3:
             "total_runtime_seconds": time.perf_counter() - started,
             "price_signal_status": "UNAVAILABLE" if signals is None else "AVAILABLE",
         }
-        return StrategicPlannerV3Result(best, hold, diagnostics)
+        return StrategicPlannerV3Result(selected, hold, diagnostics, alternative)
 
     def _search(self, state, pool_by_id, projections, *, signals, force_hold_now: bool) -> StrategicPath:
         beam = [_Node(state, (), 0.0)]

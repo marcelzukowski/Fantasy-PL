@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-23",
+  "production_changes_implemented": false,
+  "scoring": "2D + 2R + U + E - F - G; see report E for common 0..5 rubric and explicit rank 2/3 operational tie exception",
+  "recommended_next_tasks": [
+    "A02",
+    "A01",
+    "A04"
+  ],
+  "items": [
+    {
+      "rank": 1,
+      "id": "A02",
+      "title": "Validate saved Comparator results",
+      "component": "Comparator persistence",
+      "classification": "CONFIRMED BUG",
+      "scores": {
+        "decision_quality": 4,
+        "reliability": 5,
+        "user_experience": 4,
+        "evidence": 5,
+        "effort": 2,
+        "regression_risk": 2
+      },
+      "priority_index": 23,
+      "recommendation": "FIX NOW",
+      "code_paths": [
+        "desktop_app/manual_scenario_store.py",
+        "desktop_app/manual_comparator.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_manual_scenario_store.py",
+        "tests/test_manual_comparator_ui.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Comparator persistence.** Code: `manual_scenario_store._result/load`, `manual_comparator._render_comparison`; tests: `test_manual_scenario_store.py`, `test_manual_comparator_ui.py`. Problem: identity-valid but numerically/structurally inconsistent results are treated as evaluated. Fix direction: versioned result schema, complete finite/type/identity checks, path-to-total and delta reconciliation, XI/captain consistency, and corruption detection for stored content; show invalid results as requiring re-evaluation while preserving the original file. Benefit: no plausible fabricated score from local corruption. Small boundary change; risk migration of existing saved rows. Verify +100, missing fields, wrong deltas/XI, legacy rows, valid round-trip and non-destructive recovery. A checksum alone does not establish semantic correctness or malicious-edit resistance."
+    },
+    {
+      "rank": 2,
+      "id": "A01",
+      "title": "Recover FailedToStart workflows",
+      "component": "Desktop process state",
+      "classification": "CONFIRMED BUG",
+      "scores": {
+        "decision_quality": 3,
+        "reliability": 5,
+        "user_experience": 5,
+        "evidence": 5,
+        "effort": 2,
+        "regression_risk": 2
+      },
+      "priority_index": 22,
+      "recommendation": "FIX NOW",
+      "code_paths": [
+        "desktop_app/main_window.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_desktop_decision.py",
+        "tests/test_strategic_cancellation.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Desktop worker state.** Code: MainWindow Decision/Chip error callbacks/setters/full-analysis transitions; tests: existing desktop orchestration/UI tests plus real missing-program QProcess regression. Problem: error logging without a terminal transition. Fix direction: handle FailedToStart once, clear owned process/progress and move Decision to ERROR or preserve successful Decision with PARTIAL Chip state; enable appropriate retry. Benefit: recovery without restarting the app. Small state-machine change; risk duplicate callbacks on crash/finished. Verify direct launch and full-analysis chaining, nonzero exit, crash, retry, cancellation and no account/provider side effects."
+    },
+    {
+      "rank": 3,
+      "id": "A04",
+      "title": "Frozen V22/policy outcome scorecard",
+      "component": "Predictive evaluation",
+      "classification": "CONFIRMED LIMITATION",
+      "scores": {
+        "decision_quality": 5,
+        "reliability": 4,
+        "user_experience": 3,
+        "evidence": 5,
+        "effort": 3,
+        "regression_risk": 1
+      },
+      "priority_index": 22,
+      "recommendation": "NEXT",
+      "code_paths": [
+        "scripts/run_strict_model_backtest.py",
+        "src/fpl_engine/validation/replay_archive.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_planning_context.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Prediction/decision evidence.** Code: replay archive/policy validation, strict-backtest entry, prediction manifests; tests: `test_planning_context.py` and new tiny frozen evaluator fixtures. Problem: component and V1 evidence cannot answer deployed V22 quality. Fix direction: implement only the prospective scorecard protocol in C, with an explicit source/simulator gate and missing-outcomes status. Benefit: select investments using measured error and paired policy outcomes. Medium diagnostic engineering; low production risk if kept offline/read-only. Verify no target data enters prediction/calibration, aligned universes, canonical joins, no silently omitted zeros, baselines fixed beforehand, and correct missing-data reporting. Do not retrain or replace V22 as part of this item."
+    },
+    {
+      "rank": 4,
+      "id": "A03",
+      "title": "Explicit projection approval/status",
+      "component": "Projection provenance",
+      "classification": "CONFIRMED LIMITATION / EVIDENCE-BASED RISK",
+      "scores": {
+        "decision_quality": 4,
+        "reliability": 4,
+        "user_experience": 3,
+        "evidence": 5,
+        "effort": 2,
+        "regression_risk": 3
+      },
+      "priority_index": 19,
+      "recommendation": "NEXT",
+      "code_paths": [
+        "src/fpl_engine/current.py",
+        "desktop_app/decision_orchestration.py",
+        "desktop_app/run_center.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_planning_context.py",
+        "tests/test_desktop_decision.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Projection approval.** Code: `current.py:1830`, `validate_decision_bundle`, `discover_projection_runs`, `ProjectionRun.label`; tests: planning-context and desktop run-center/decision tests. Problem: mode means count while UI/validator imply production provenance. Fix direction: define explicit approved simulator/config provenance and display diagnostic/legacy eligibility; document how accepted 20k references are represented without rewriting old artifacts. Benefit: avoid silently treating a 256-simulation experiment as equivalent to an approved weekly run. Small shared metadata change, medium regression risk. Verify canonical research run, missing version, disagreeing manifest, legacy bundle, approved 10k and explicitly approved 20k. Do not automatically invalidate the accepted GW8 reference based on count."
+    },
+    {
+      "rank": 5,
+      "id": "A06",
+      "title": "Resolve timed Market Shadow sidecars",
+      "component": "Advisory availability UI",
+      "classification": "CONFIRMED BUG",
+      "scores": {
+        "decision_quality": 1,
+        "reliability": 3,
+        "user_experience": 4,
+        "evidence": 5,
+        "effort": 1,
+        "regression_risk": 1
+      },
+      "priority_index": 15,
+      "recommendation": "NEXT",
+      "code_paths": [
+        "desktop_app/run_center.py",
+        "desktop_app/main_window.py",
+        "src/fpl_engine/current_market_shadow.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_analysis_trust.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Market availability display.** Code: `run_center.discover_projection_runs`, `MainWindow._refresh_analysis_trust`, `current_market_shadow._artifact_payload`; tests: trust/run-center tests plus synthetic immutable sidecars. Problem: successful sidecars are ignored. Fix direction: read a compatible sidecar for the selected run and show model cutoff, market as-of, coverage and advisory-only status. Benefit: accurate availability without changing recommendations. Small UI/data lookup change; low risk. Verify absent, corrupt, mismatched-run, success, failure and post-cutoff advisory states; never backdate quotes or make core VERIFIED depend on optional markets."
+    },
+    {
+      "rank": 6,
+      "id": "A05",
+      "title": "Quantify native objective/search limits",
+      "component": "V3 objective and recall",
+      "classification": "CONFIRMED LIMITATION",
+      "scores": {
+        "decision_quality": 4,
+        "reliability": 2,
+        "user_experience": 3,
+        "evidence": 5,
+        "effort": 3,
+        "regression_risk": 3
+      },
+      "priority_index": 14,
+      "recommendation": "NEXT: measurement only",
+      "code_paths": [
+        "src/fpl_engine/strategy/strategic_planner_v3.py",
+        "src/fpl_engine/optimizer/core.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_strategic_planner_v3.py",
+        "tests/test_v3_guarded_portfolio.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Objective/coverage fidelity.** Code: V3 actions/search/terminal value, `optimizer.core.optimize_lineup`, Decision preview/captain paths; tests: V3, FT and independent reduced oracle tests. Problem: truncated current candidates, approximate future beam, marginal scoring and terminal value can dominate tiny deltas. Fix direction: document and measure objective components and recommendation stability on already frozen eligible cases before proposing a mathematical change; retain known counterexamples as gates. Benefit: identify whether model, objective or recall drives a failure. Medium diagnostic work; high risk if expanded into scoring changes. Verify exact stated scope, independent objective reconstruction, controlled sensitivity and no production mutation. No new K5 generator or retuned heuristic."
+    },
+    {
+      "rank": 7,
+      "id": "A07",
+      "title": "Persist Chip timing/cache attribution",
+      "component": "Chip observability",
+      "classification": "CONFIRMED LIMITATION",
+      "scores": {
+        "decision_quality": 2,
+        "reliability": 3,
+        "user_experience": 4,
+        "evidence": 4,
+        "effort": 2,
+        "regression_risk": 2
+      },
+      "priority_index": 14,
+      "recommendation": "NEXT: instrumentation only",
+      "code_paths": [
+        "desktop_app/chip_runner.py",
+        "desktop_app/main_window.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_strategic_cache_contract.py",
+        "tests/test_strategic_cancellation.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Chip observability.** Code: `chip_runner.run_desktop_chip_screen` timing emission/cache, `MainWindow` progress/cancel; tests: strategic-cache/cancellation and report round-trips. Problem: current reports cannot establish the runtime bottleneck or reuse effectiveness. Fix direction: persist existing stage timings, cache hit/miss reason and cancellation outcome in a versioned diagnostic/report field. Benefit: target the expensive stage and distinguish cold materialization from repeated evaluation. Small instrumentation change; risk schema compatibility. Verify serialization order captures final totals, old reports load, cache identity unaffected and instrumented/uninstrumented objective parity. No full simulations just to populate a performance dashboard."
+    },
+    {
+      "rank": 8,
+      "id": "A08",
+      "title": "Record reproducible desktop environment",
+      "component": "Packaging and dependencies",
+      "classification": "CONFIRMED LIMITATION",
+      "scores": {
+        "decision_quality": 1,
+        "reliability": 4,
+        "user_experience": 3,
+        "evidence": 5,
+        "effort": 2,
+        "regression_risk": 2
+      },
+      "priority_index": 14,
+      "recommendation": "NEXT",
+      "code_paths": [
+        "pyproject.toml",
+        "FPLControlCenter_PL.spec",
+        "desktop_app/orchestration.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_packaging_spec.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Desktop environment recipe.** Code/config: pyproject, lock, spec, external worker resolver, theme compatibility adapter; tests: packaging contract and separately authorized recreation smoke. Problem: engine sync cannot reproduce desktop extras. Fix direction: capture compatible installed desktop/build versions and external-worker prerequisites in a narrow optional requirement/constraint recipe. Benefit: reproducible repair/build on another checkout. Small configuration work; risk changing working versions if installation is mixed in. Verify a separate disposable environment only when authorized, archive exclusions and external-boundary smoke; preserve the repaired `.venv`."
+    },
+    {
+      "rank": 9,
+      "id": "A09",
+      "title": "Keep primary comparison metrics visible",
+      "component": "Comparator density",
+      "classification": "CONFIRMED LIMITATION",
+      "scores": {
+        "decision_quality": 2,
+        "reliability": 1,
+        "user_experience": 4,
+        "evidence": 5,
+        "effort": 2,
+        "regression_risk": 2
+      },
+      "priority_index": 11,
+      "recommendation": "LATER",
+      "code_paths": [
+        "desktop_app/manual_player_table.py",
+        "desktop_app/manual_comparator.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_manual_comparator_ui.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Comparator density.** Code: PlayerSelectionPanel widths/filters, ManualComparator splitters/finance/result grid; tests: manual UI plus geometry/keyboard and packaged smoke if implemented. Problem: horizontal scrolling hides 5-GW/fixture columns used to compare players. Fix direction: prioritize compact primary columns and selected finance/objective, with secondary fixture detail on demand; keep visible checkbox, selection counts and retained hidden selections. Benefit: fewer navigation steps on a smaller screen. Small UI change; risk sorting/filter/focus regressions. Verify 1280/1550 widths, real Windows scaling, keyboard/contrast, missing/DGW labels and no score changes. No wholesale redesign or more analytics."
+    },
+    {
+      "rank": 10,
+      "id": "A10",
+      "title": "Define fresh-hash versus immutable-cache boundary",
+      "component": "Artifact integrity cache",
+      "classification": "CONFIRMED LIMITATION",
+      "scores": {
+        "decision_quality": 1,
+        "reliability": 2,
+        "user_experience": 1,
+        "evidence": 5,
+        "effort": 2,
+        "regression_risk": 3
+      },
+      "priority_index": 7,
+      "recommendation": "LATER",
+      "code_paths": [
+        "src/fpl_engine/planning/context.py"
+      ],
+      "related_existing_tests": [
+        "tests/test_planning_context.py"
+      ],
+      "problem_solution_benefit_complexity_risk_verification": "Integrity cache contract.** Code: planning/context `_file_sha256`; tests: planning artifact mutation and new preserved-stat fixture. Problem: content verification trusts unchanged size/mtime in-process. Fix direction: distinguish immutable display cache from fresh validation at mutation/consequential-load boundaries, or enforce immutable publication. Benefit: avoid stale integrity acceptance after a special rewrite. Small implementation, shared-path regression risk. Verify ordinary edits, same-size preserved-time edits, missing files, immutable cache hits and measured overhead. No claim of an active exploit; do not disable every cache indiscriminately."
+    }
+  ]
+}

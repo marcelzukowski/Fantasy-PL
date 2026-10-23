@@ -50,6 +50,7 @@ from .stepper_field import StepperField
 from .state import POSITION_COUNTS, DesktopSquadState, DesktopStateError, load_state, planning_state_changed, preserve_account_state, save_state, validate_state
 from .analysis_trust import AnalysisTrustInputs, ChipTrustStatus, build_analysis_trust
 from .theme import apply_app_theme
+from .manual_comparator import ManualComparator
 from .transfer_targets import (
     TransferTarget,
     TransferTargetError,
@@ -136,12 +137,19 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_squad_tab(), "Squad")
         self.tabs.addTab(self._build_analysis_tab(), "Analysis")
         self.tabs.addTab(self._build_engine_tab(), "Engine")
+        self.manual_comparator = ManualComparator(self.root, self._state_from_ui,
+            lambda: self._selected_bundle_for_state(self._state_from_ui()), self)
+        self.tabs.addTab(self.manual_comparator, "Transfer Comparator")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         root_layout.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage(f"Players loaded: {len(self.players)} · Ready")
         self._build_editor_dock()
+
+    def closeEvent(self, event) -> None:
+        self.manual_comparator.shutdown()
+        super().closeEvent(event)
 
     def _build_header(self) -> QFrame:
         header = QFrame(); header.setObjectName("Header")
@@ -458,6 +466,7 @@ class MainWindow(QMainWindow):
             chip_state=self._chip_trust_status(),
             market_status=selected_run.market_shadow_status if selected_run is not None else None,
             market_coverage=selected_run.market_shadow_coverage if selected_run is not None else None,
+            market_detail=selected_run.market_shadow_detail if selected_run is not None else None,
             historical=historical, material_state_changed=material_changed,
             projection_changed=projection_changed,
             report_status=active.status if active is not None else None,
@@ -1186,13 +1195,21 @@ class MainWindow(QMainWindow):
         path_points = strategic.get("projected_3gw_path_points")
         terminal = strategic.get("terminal_ft_value")
         delta = strategic.get("delta_vs_hold_now")
+        total = strategic.get("total_path_value")
+        advantage = strategic.get("delta_vs_alternative", delta)
+        comparison = "alternative" if "delta_vs_alternative" in strategic else "Roll"
         if isinstance(path_points, (int, float)):
             lines.append(f"V3 3-GW path points: {float(path_points):.2f}")
         if isinstance(terminal, (int, float)):
             lines.append(f"Terminal FT value: {float(terminal):.2f}")
-        if isinstance(delta, (int, float)):
-            lines.append(f"3-GW path advantage vs Roll: {float(delta):+.2f} projected pts")
+        if isinstance(total, (int, float)):
+            lines.append(f"V3 complete objective: {float(total):.2f}")
+        if isinstance(advantage, (int, float)):
+            lines.append(f"V3 objective advantage vs {comparison}: {float(advantage):+.2f}")
         lines.append("Next-GW action is indicative and will be recalculated after the next sync.")
+        free_transfers = action.get("free_transfers_before", state.free_transfers)
+        if type(free_transfers) is int and free_transfers > 2:
+            lines.append("V3 evaluates up to 2 transfers per gameweek. Additional free transfers are not evaluated.")
         self.analysis_strategic_summary.setText("\n".join(lines))
         self._render_roll_counterfactual(hold, metadata, delta)
 
@@ -1254,7 +1271,8 @@ class MainWindow(QMainWindow):
         if isinstance(points, (int, float)):
             lines.append(f"3-GW V3 result if roll: {float(points):.2f}")
         if isinstance(delta, (int, float)):
-            lines.append(f"Difference vs recommended path: {-float(delta):+.2f}")
+            difference = -float(delta) if delta else 0.0
+            lines.append(f"Difference vs recommended path: {difference:+.2f}")
         self.analysis_roll_summary.setText("\n".join(lines))
 
     def _render_strategic_v2_diagnostic(self, report: DecisionReportV2, state: DesktopSquadState) -> None:
@@ -1294,8 +1312,8 @@ class MainWindow(QMainWindow):
                 "Strategic action: MAKE TRANSFER",
                 f"OUT: {names(outgoing)}",
                 f"IN: {names(incoming)}",
-                f"Transfers used: {action.get('free_transfers_used', '\u2014')}",
-                f"Hit: {action.get('hit_cost', '\u2014')} pts",
+                f"Transfers used: {action.get('free_transfers_used', dash)}",
+                f"Hit: {action.get('hit_cost', dash)} pts",
                 f"Bank after: {money(action.get('resulting_bank'))}",
                 f"Free transfers: {before if type(before) is int else dash} \u2192 {after if type(after) is int else dash} next GW",
             ))
@@ -1453,8 +1471,8 @@ class MainWindow(QMainWindow):
                 lines.append("IN: " + ", ".join(name(player_id) for player_id in plan.transfers_in))
             lines.append(
                 f"Transfers: {plan.transfer_count} | FT used: "
-                f"{plan.free_transfers_used if plan.free_transfers_used is not None else '\u2014'} | "
-                f"Hit: {plan.hit_cost if plan.hit_cost is not None else '\u2014'} pts | "
+                f"{plan.free_transfers_used if plan.free_transfers_used is not None else '—'} | "
+                f"Hit: {plan.hit_cost if plan.hit_cost is not None else '—'} pts | "
                 f"Bank after: {money(plan.resulting_bank)}"
             )
             lines.append(
@@ -1526,6 +1544,12 @@ class MainWindow(QMainWindow):
 
     def _decision_process_error(self, error) -> None:
         self._append_engine_log(f"Decision engine QProcess error: {error}")
+        if error == QProcess.ProcessError.FailedToStart and self.decision_process is not None:
+            detail = self.decision_process.errorString()
+            self._append_engine_log(f"DECISION ENGINE: worker could not start: {detail}")
+            # FailedToStart does not emit finished, so finish the workflow here.
+            self._decision_finished(1, QProcess.ExitStatus.CrashExit)
+            self.statusBar().showMessage(f"Decision worker could not start. Check external .venv and retry. {detail}")
 
     def _decision_finished(self, exit_code, exit_status) -> None:
         self._read_decision_stdout(); self._read_decision_stderr(); self.engine_progress.setRange(0, 1); self.engine_progress.setValue(1)
@@ -1594,7 +1618,9 @@ class MainWindow(QMainWindow):
             )
         except (DesktopStateError, DesktopEngineError) as exc:
             self._append_engine_log(f"CHIP SCREEN: {exc}")
-            self._set_chip_run_state(ChipRunState.ERROR, "Chip screen needs matching saved production data.")
+            self._set_chip_run_state(ChipRunState.ERROR, f"Chip screen could not start: {exc}")
+            self.engine_progress.setRange(0, 1)
+            self._full_analysis_after_chip(outcome="could not start")
             return
         process = QProcess(self)
         environment = QProcessEnvironment.systemEnvironment(); environment.insert("PYTHONUTF8", "1"); environment.insert("PYTHONIOENCODING", "utf-8")
@@ -1610,6 +1636,11 @@ class MainWindow(QMainWindow):
 
     def _chip_process_error(self, error) -> None:
         self._append_engine_log(f"Chip screen QProcess error: {error}")
+        if error == QProcess.ProcessError.FailedToStart and self.chip_process is not None:
+            detail = self.chip_process.errorString()
+            self._append_engine_log(f"CHIP SCREEN: worker could not start: {detail}")
+            self._chip_finished(1, QProcess.ExitStatus.CrashExit)
+            self.statusBar().showMessage(f"Chip worker could not start. Check external .venv and retry. {detail}")
 
     def _chip_finished(self, exit_code, exit_status) -> None:
         self._read_chip_stdout(); self._read_chip_stderr(); self.engine_progress.setRange(0, 1); self.engine_progress.setValue(1)

@@ -1,0 +1,112 @@
+{
+  "chips": [
+    {
+      "path": "data\\processed\\desktop_chips\\2026-27\\desktop-chip-20261012T103852Z.json",
+      "status": "COMPLETE",
+      "created_at": "2026-10-12T10:38:52.384138+00:00",
+      "completed_at": "2026-10-12T10:38:52.384138+00:00",
+      "context_id": "43a772a4c05bf56da31298c4c076be394b7a7d1687b637f1aea4737f741b1f16",
+      "projection_run_id": "20261012T091744Z",
+      "timing": {
+        ".simulation_metadata.candidate_generation.runtime_seconds": 0.0012040999999953783
+      }
+    },
+    {
+      "path": "data\\processed\\desktop_chips\\2026-27\\desktop-chip-20261022T090436Z.json",
+      "status": "COMPLETE",
+      "created_at": "2026-10-22T09:04:36.238200+00:00",
+      "completed_at": "2026-10-22T09:04:36.238200+00:00",
+      "context_id": "9362daa92b379107175befb935f70b38d755f7fd5c9196560e28791d3e0c1208",
+      "projection_run_id": "20261022T071806Z",
+      "timing": {
+        ".simulation_metadata.candidate_generation.runtime_seconds": 0.00548230000276817
+      }
+    },
+    {
+      "path": "data\\processed\\desktop_chips\\2026-27\\desktop-chip-20261022T181320Z.json",
+      "status": "COMPLETE",
+      "created_at": "2026-10-22T18:13:20.256185+00:00",
+      "completed_at": "2026-10-22T18:13:20.256185+00:00",
+      "context_id": "9362daa92b379107175befb935f70b38d755f7fd5c9196560e28791d3e0c1208",
+      "projection_run_id": "20261022T071806Z",
+      "timing": {
+        ".simulation_metadata.candidate_generation.runtime_seconds": 0.0012522000033641234
+      }
+    },
+    {
+      "path": "data\\processed\\desktop_chips\\2026-27\\desktop-chip-20261023T070358Z.json",
+      "status": "COMPLETE",
+      "created_at": "2026-10-23T07:03:58.679703+00:00",
+      "completed_at": "2026-10-23T07:03:58.679703+00:00",
+      "context_id": "9362daa92b379107175befb935f70b38d755f7fd5c9196560e28791d3e0c1208",
+      "projection_run_id": "20261022T071806Z",
+      "timing": {
+        ".simulation_metadata.candidate_generation.runtime_seconds": 0.001192399999808913
+      }
+    },
+    {
+      "path": "data\\processed\\desktop_chips\\2026-27\\desktop-chip-20261023T081259Z.json",
+      "status": "COMPLETE",
+      "created_at": "2026-10-23T08:12:59.949975+00:00",
+      "completed_at": "2026-10-23T08:12:59.949975+00:00",
+      "context_id": "9362daa92b379107175befb935f70b38d755f7fd5c9196560e28791d3e0c1208",
+      "projection_run_id": "20261022T071806Z",
+      "timing": {
+        ".simulation_metadata.candidate_generation.runtime_seconds": 0.001172000000224216
+      }
+    }
+  ],
+  "replays": {
+    "integrated_replay.json": {
+      "current_2026_27_outcomes_used": false,
+      "explicit_challenger_wiring_added": true,
+      "goal_allocation_policy": "production default",
+      "network_refresh": false,
+      "production_default_simulator_changed": false,
+      "projection_rows": 3936,
+      "source_harness": "scripts\\captain067c_default_runtime_acceptance.py",
+      "status": "CAPTAIN_068G_B_INTEGRATED_REPLAY",
+      "cases": {
+        "v1": {
+          "run": "scratch\\decision\\captain068g\\integrated_replay\\v1",
+          "simulator_versions": [
+            "fixture_simulator_v1"
+          ]
+        },
+        "v22": {
+          "run": "scratch\\decision\\captain068g\\integrated_replay\\v22",
+          "simulator_versions": [
+            "fixture_simulator_v1"
+          ]
+        }
+      }
+    },
+    "integrated_replay_r2.json": {
+      "2026_27_outcomes_used": false,
+      "network_refresh": false,
+      "production_default_changed": false,
+      "status": "CAPTAIN_068G_B_R2_TRUE_V22_REPLAY",
+      "cases": null
+    }
+  },
+  "packages": [
+    {
+      "path": "FPLControlCenter_PL.exe",
+      "bytes": 78861896,
+      "sha256": "075727a3c1e3005ebbded11fd39daffeb9f7a82cb9730163bd97f0b79918a67a",
+      "scientific_modules": [],
+      "diagnostic_modules": [],
+      "player_risk_module": true,
+      "minutes_history_module": true
+    },
+    {
+      "path": "dist\\FPLControlCenter_PL.exe",
+      "bytes": 78861896,
+      "sha256": "075727a3c1e3005ebbded11fd39daffeb9f7a82cb9730163bd97f0b79918a67a",
+      "scientific_modules": [],
+      "diagnostic_modules": [],
+      "player_risk_module": true,
+      "minutes_history_module": true
+    }
+  ]
+}

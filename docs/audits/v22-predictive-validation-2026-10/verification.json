@@ -1,0 +1,26 @@
+{
+  "selfcheck": "PASS",
+  "cohort_checks": "PASS",
+  "report_sections_and_links": "PASS",
+  "archives_pass": 9,
+  "element_summary_crosscheck_rows": 73,
+  "element_summary_mismatches": 0,
+  "source_time_fields_checked": {
+    "20261009T063838Z": 42,
+    "20261012T091744Z": 48
+  },
+  "future_source_times": [],
+  "protected_files_checked": 2796,
+  "changed_protected_files": [],
+  "git_status_changes_outside_audit": [],
+  "release": {
+    "FPLControlCenter_PL.exe": {
+      "bytes": 78869641,
+      "sha256": "4befb95fcdbf71e84abb7af3a5100dcfd51d8f96907b848036ef5a3d46f56ff1"
+    },
+    "dist/FPLControlCenter_PL.exe": {
+      "bytes": 78869641,
+      "sha256": "4befb95fcdbf71e84abb7af3a5100dcfd51d8f96907b848036ef5a3d46f56ff1"
+    }
+  }
+}

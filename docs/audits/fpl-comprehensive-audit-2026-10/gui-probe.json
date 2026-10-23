@@ -1,0 +1,55 @@
+{
+  "layouts": [
+    {
+      "requested_size": [
+        1550,
+        820
+      ],
+      "actual_size": [
+        1550,
+        820
+      ],
+      "font_points": 9,
+      "screenshot": "comparator-1550x820-font9.png",
+      "out_table_width": 455,
+      "in_table_width": 729,
+      "out_horizontal_scroll_max": 2,
+      "in_horizontal_scroll_max": 5
+    },
+    {
+      "requested_size": [
+        1280,
+        800
+      ],
+      "actual_size": [
+        1280,
+        800
+      ],
+      "font_points": 9,
+      "screenshot": "comparator-1280x800-font9.png",
+      "out_table_width": 374,
+      "in_table_width": 599,
+      "out_horizontal_scroll_max": 3,
+      "in_horizontal_scroll_max": 7
+    },
+    {
+      "requested_size": [
+        1280,
+        800
+      ],
+      "actual_size": [
+        1280,
+        800
+      ],
+      "font_points": 14,
+      "screenshot": "comparator-1280x800-font14.png",
+      "out_table_width": 391,
+      "in_table_width": 588,
+      "out_horizontal_scroll_max": 3,
+      "in_horizontal_scroll_max": 7
+    }
+  ],
+  "mouse_select_and_keyboard_deselect": "PASS",
+  "synthetic_data": true,
+  "packaged_interaction_run": false
+}

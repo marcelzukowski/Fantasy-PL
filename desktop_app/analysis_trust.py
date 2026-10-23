@@ -55,6 +55,7 @@ class AnalysisTrustInputs:
     chip_state: ChipTrustStatus = ChipTrustStatus.NOT_RUN
     market_status: str | None = None
     market_coverage: str | None = None
+    market_detail: str | None = None
     price_signal_status: str | None = None
     archive_status: str | None = None
     chip_forecast_status: str | None = None
@@ -158,6 +159,8 @@ def build_analysis_trust(inputs: AnalysisTrustInputs) -> AnalysisTrustViewModel:
     if minutes_history not in {"AVAILABLE", "PARTIAL", "UNAVAILABLE", "STALE", "SKIPPED_AFTER_DEADLINE", "SKIPPED_UNVERIFIED_DEADLINE"}:
         minutes_history = "UNAVAILABLE"
     notes = _optional_notes(inputs.chip_state, market, inputs.market_coverage, price, forecast, availability, minutes_history)
+    if inputs.market_detail:
+        notes += (f"Market data: {market}. {inputs.market_detail}",)
     common = dict(
         fpl_sync_timestamp=_timestamp(inputs.fpl_sync_timestamp),
         analysis_timestamp=_timestamp(inputs.analysis_timestamp) or (decision.created_at if decision else None),
