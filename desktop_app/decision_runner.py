@@ -685,6 +685,14 @@ def main() -> int:
         )
     except DesktopDecisionError as exc:
         parser.error(str(exc))
+    # The external worker freezes a standalone Decision before any optional Chip run.
+    from fpl_engine.validation.prospective_capture import capture_decision
+    from fpl_engine.validation.replay_archive import ReplayArchiveError
+    try:
+        archive = capture_decision(Path(__file__).resolve().parents[1], report)
+        print(f"PROSPECTIVE_ARCHIVE={archive}", flush=True)
+    except (ReplayArchiveError, OSError, ValueError) as exc:
+        print(f"PROSPECTIVE_CAPTURE=UNAVAILABLE: {exc}", flush=True)
     print(f"DECISION_REPORT={report}")
     return 0
 

@@ -1,0 +1,8 @@
+{
+  "historical_metrics_reproduced": "PASS",
+  "unique_gw_and_rows": "PASS",
+  "input_hashes_unchanged": "PASS",
+  "input_files_checked": 760,
+  "same_primary_ledger_after_two_reports": "PASS",
+  "saved_v3_hold_scores": "PASS"
+}

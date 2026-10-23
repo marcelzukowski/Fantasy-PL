@@ -255,6 +255,8 @@ def test_decision_button_triggers_friendly_missing_artifact_error(qapp, monkeypa
     )
     window = MainWindow(root)
     try:
+        # Exercise the mocked lookup regardless of the live Run Center selection.
+        window.selected_projection_bundle = root / "missing-production-bundle.json"
         window.run_decision.click()
         assert window.decision_run_state is DecisionRunState.ERROR
         assert "No saved production projection run" in window.engine_log.toPlainText()
